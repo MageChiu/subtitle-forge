@@ -26,20 +26,22 @@ tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 
 # Audio processing
-ffmpeg-next = "7"
+ffmpeg-next = "8"
 
 # ASR
 whisper-rs = "0.12"
 
 # Translation (online)
-reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"] }
+futures-util = "0.3"
 
 # Translation (offline - optional)
-ort = { version = "2", optional = true }
-tokenizers = { version = "0.19", optional = true }
+ort = { version = "2.0.0-rc.12", optional = true }
+tokenizers = { version = "0.20", optional = true }
 
 # Utilities
 num_cpus = "1"
+libc = "0.2"
 thiserror = "1"
 anyhow = "1"
 tracing = "0.1"
@@ -56,7 +58,12 @@ online-translate = []
 offline-translate = ["ort", "tokenizers"]
 cuda = ["whisper-rs/cuda"]
 metal = ["whisper-rs/metal"]
-vulkan = ["whisper-rs/vulkan"]
+#vulkan = ["whisper-rs/vulkan"]
+# 补充其他可用的 GPU 加速选项（可选）
+hipblas = ["whisper-rs/hipblas"]    # AMD GPU
+opencl = ["whisper-rs/opencl"]      # OpenCL
+coreml = ["whisper-rs/coreml"]      # Apple CoreML
+openblas = ["whisper-rs/openblas"]  # CPU BLAS 加速
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

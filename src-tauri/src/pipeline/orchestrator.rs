@@ -3,7 +3,7 @@
 // ============================================================
 
 use crate::audio::extractor::{AudioExtractor, ExtractConfig};
-use crate::asr::engine::{AsrConfig, AsrEngine, Segment};
+use crate::asr::engine::{AsrConfig, AsrEngine};
 use crate::error::AppError;
 use crate::subtitle::ass::{AssStyle, AssWriter};
 use crate::subtitle::merger::SubtitleMerger;
@@ -18,22 +18,15 @@ use tokio::sync::mpsc;
 /// Pipeline task configuration (from frontend)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineConfig {
-    /// Input video file path
     pub input_path: String,
-    /// Output directory
     pub output_dir: String,
-    /// Source language (None = auto-detect)
     pub source_language: Option<String>,
-    /// Target language for translation
     pub target_language: String,
-    /// Output subtitle format
     pub output_format: SubtitleFormat,
-    /// Whisper model path
     pub asr_model: String,
-    /// Translation engine identifier
     pub translate_engine: String,
-    /// Enable GPU acceleration
     pub use_gpu: bool,
+    pub skip_translation: bool,
 }
 
 /// Pipeline stage for progress tracking
@@ -103,13 +96,32 @@ impl PipelineOrchestrator {
         stage_tx: mpsc::Sender<PipelineStage>,
         cancel_rx: tokio::sync::watch::Receiver<bool>,
     ) -> Result<String, AppError> {
+        match self.run_inner(config, stage_tx.clone(), cancel_rx).await {
+            Ok(output) => Ok(output),
+            Err(e) => {
+                let _ = stage_tx
+                    .send(PipelineStage::Failed {
+                        error: e.to_string(),
+                    })
+                    .await;
+                Err(e)
+            }
+        }
+    }
+
+    async fn run_inner(
+        &self,
+        config: PipelineConfig,
+        stage_tx: mpsc::Sender<PipelineStage>,
+        cancel_rx: tokio::sync::watch::Receiver<bool>,
+    ) -> Result<String, AppError> {
         let input_path = Path::new(&config.input_path);
         let output_dir = Path::new(&config.output_dir);
 
         // =============== Stage 1: Audio Extraction ===============
         tracing::info!("Stage 1: Extracting audio from {:?}", input_path);
 
-        let (extract_progress_tx, mut extract_progress_rx) = mpsc::channel(32);
+        let (extract_progress_tx, mut extract_progress_rx) = mpsc::channel::<crate::audio::extractor::ExtractProgress>(32);
         let stage_tx_1 = stage_tx.clone();
         tokio::spawn(async move {
             while let Some(p) = extract_progress_rx.recv().await {
@@ -137,7 +149,7 @@ impl PipelineOrchestrator {
         // =============== Stage 2: Speech Recognition ===============
         tracing::info!("Stage 2: Transcribing audio {:?}", audio_path);
 
-        let (asr_progress_tx, mut asr_progress_rx) = mpsc::channel(32);
+        let (asr_progress_tx, mut asr_progress_rx) = mpsc::channel::<crate::asr::engine::AsrProgress>(32);
         let stage_tx_2 = stage_tx.clone();
         tokio::spawn(async move {
             while let Some(p) = asr_progress_rx.recv().await {
@@ -183,40 +195,64 @@ impl PipelineOrchestrator {
             .as_deref()
             .unwrap_or_else(|| &segments[0].language);
 
-        // =============== Stage 3: Translation ===============
-        tracing::info!(
-            "Stage 3: Translating {} segments ({} -> {})",
-            segments.len(),
-            source_lang,
-            config.target_language
-        );
+        // =============== Stage 3: Translation (optional) ===============
+        let subtitle = if config.skip_translation {
+            tracing::info!(
+                "Stage 3: Skipping translation (monolingual mode, {} segments, lang={})",
+                segments.len(),
+                source_lang
+            );
+            SubtitleMerger::from_segments(&segments, source_lang, config.output_format)
+        } else {
+            tracing::info!(
+                "Stage 3: Translating {} segments ({} -> {})",
+                segments.len(),
+                source_lang,
+                config.target_language
+            );
 
-        let (trans_progress_tx, mut trans_progress_rx) = mpsc::channel(32);
-        let stage_tx_3 = stage_tx.clone();
-        tokio::spawn(async move {
-            while let Some(p) = trans_progress_rx.recv().await {
-                let _ = stage_tx_3
-                    .send(PipelineStage::Translating {
-                        percent: p.percent,
-                        translated_count: p.translated_count,
-                        total_count: p.total_count,
-                    })
-                    .await;
-            }
-        });
+            let (trans_progress_tx, mut trans_progress_rx) = mpsc::channel::<crate::translate::engine::TranslateProgress>(32);
+            let stage_tx_3 = stage_tx.clone();
+            tokio::spawn(async move {
+                while let Some(p) = trans_progress_rx.recv().await {
+                    tracing::info!(
+                        "Translation progress: {}/{} ({:.1}%)",
+                        p.translated_count,
+                        p.total_count,
+                        p.percent
+                    );
+                    let _ = stage_tx_3
+                        .send(PipelineStage::Translating {
+                            percent: p.percent,
+                            translated_count: p.translated_count,
+                            total_count: p.total_count,
+                        })
+                        .await;
+                }
+            });
 
-        let translate_request = TranslateRequest {
-            texts: segments.iter().map(|s| s.text.clone()).collect(),
-            source_lang: source_lang.to_string(),
-            target_lang: config.target_language.clone(),
-            context_hint: None,
+            let translate_request = TranslateRequest {
+                texts: segments.iter().map(|s| s.text.clone()).collect(),
+                source_lang: source_lang.to_string(),
+                target_lang: config.target_language.clone(),
+                context_hint: None,
+            };
+
+            let translation = self
+                .translate_engine
+                .translate(&translate_request, trans_progress_tx)
+                .await
+                .map_err(AppError::Translate)?;
+
+            SubtitleMerger::merge(
+                &segments,
+                &translation,
+                source_lang,
+                &config.target_language,
+                config.output_format,
+            )
+            .map_err(AppError::Subtitle)?
         };
-
-        let translation = self
-            .translate_engine
-            .translate(&translate_request, trans_progress_tx)
-            .await
-            .map_err(AppError::Translate)?;
 
         // Check cancellation
         if *cancel_rx.borrow() {
@@ -228,34 +264,21 @@ impl PipelineOrchestrator {
         tracing::info!("Stage 4: Generating {:?} subtitle", config.output_format);
         let _ = stage_tx.send(PipelineStage::GeneratingSubtitle).await;
 
-        let subtitle = SubtitleMerger::merge(
-            &segments,
-            &translation,
-            source_lang,
-            &config.target_language,
-            config.output_format,
-        )
-        .map_err(AppError::Subtitle)?;
-
-        // Generate output content
         let output_content = match config.output_format {
             SubtitleFormat::Srt => SrtWriter::write(&subtitle),
             SubtitleFormat::Ass => AssWriter::write(&subtitle, &AssStyle::default()),
             SubtitleFormat::Vtt => VttWriter::write(&subtitle),
         };
 
-        // Build output filename
         let input_stem = input_path
             .file_stem()
             .unwrap_or_default()
             .to_string_lossy();
-        let output_filename = format!(
-            "{}.{}-{}.{}",
-            input_stem,
-            source_lang,
-            config.target_language,
-            config.output_format.extension()
-        );
+        let output_filename = if config.skip_translation {
+            format!("{}.{}.{}", input_stem, source_lang, config.output_format.extension())
+        } else {
+            format!("{}.{}-{}.{}", input_stem, source_lang, config.target_language, config.output_format.extension())
+        };
         let output_path = output_dir.join(&output_filename);
 
         // Ensure output directory exists

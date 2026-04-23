@@ -82,8 +82,8 @@ pub enum TranslateError {
     #[error("Invalid API key")]
     InvalidApiKey,
 
-    #[error("Unsupported language pair: {source} -> {target}")]
-    UnsupportedPair { source: String, target: String },
+    #[error("Unsupported language pair: {from} -> {target}")]
+    UnsupportedPair { from: String, target: String },
 }
 
 #[derive(Error, Debug)]
