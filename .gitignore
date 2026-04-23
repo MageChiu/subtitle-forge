@@ -1,0 +1,32 @@
+# SubtitleForge
+
+# Dependencies
+node_modules/
+target/
+
+# Build artifacts
+dist/
+dist-ssr/
+
+# Model files (large binaries)
+models/whisper/*.bin
+models/opus-mt/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp files
+src-tauri/tmp/
+*.log
