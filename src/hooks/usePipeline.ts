@@ -11,6 +11,7 @@ export interface PipelineConfig {
   asr_model: string;
   translate_engine: string;
   use_gpu: boolean;
+  skip_translation: boolean;
 }
 
 export interface PipelineStage {

@@ -2,7 +2,10 @@
 
 # Dependencies
 node_modules/
+
+# Rust / Cargo
 target/
+src-tauri/target/
 
 # Build artifacts
 dist/
@@ -22,11 +25,27 @@ models/opus-mt/
 .idea/
 *.swp
 *.swo
+*~
 
 # OS
 .DS_Store
 Thumbs.db
+Desktop.ini
+ehthumbs.db
 
 # Temp files
 src-tauri/tmp/
 *.log
+tmp/
+
+# Lock files (uncomment if you want to track them)
+pnpm-lock.yaml
+
+# Tauri generated
+src-tauri/gen/schemas/
+
+# Whisper model cache
+*.ggml
+
+# Cargo build artifacts
+**/*.rs.bk

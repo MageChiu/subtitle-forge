@@ -5,36 +5,27 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
-pub struct LlmTranslatePlugin {
+pub struct OllamaTranslatePlugin {
     metadata: PluginMetadata,
     client: reqwest::Client,
 }
 
-impl LlmTranslatePlugin {
+impl OllamaTranslatePlugin {
     pub fn new() -> Self {
         Self {
             metadata: PluginMetadata {
-                namespace: "llm/v1".to_string(),
-                display_name: "Remote LLM".to_string(),
-                description: "High quality via OpenAI/DeepSeek compatible API".to_string(),
+                namespace: "ollama/v1".to_string(),
+                display_name: "Ollama (Local LLM)".to_string(),
+                description: "Privacy-first via local Ollama, no network required".to_string(),
                 version: "1.0.0".to_string(),
-                category: PluginCategory::RemoteLlm,
-                requires_network: true,
+                category: PluginCategory::LocalLlm,
+                requires_network: false,
                 config_schema: vec![
                     ConfigField {
-                        key: "api_key".to_string(),
-                        label: "API Key".to_string(),
-                        field_type: ConfigFieldType::Password,
-                        default: String::new(),
-                        required: true,
-                        placeholder: Some("sk-...".to_string()),
-                        description: None,
-                    },
-                    ConfigField {
                         key: "base_url".to_string(),
-                        label: "API Base URL".to_string(),
+                        label: "Ollama URL".to_string(),
                         field_type: ConfigFieldType::Url,
-                        default: "https://api.openai.com/v1".to_string(),
+                        default: "http://localhost:11434".to_string(),
                         required: true,
                         placeholder: None,
                         description: None,
@@ -43,9 +34,9 @@ impl LlmTranslatePlugin {
                         key: "model".to_string(),
                         label: "Model".to_string(),
                         field_type: ConfigFieldType::Text,
-                        default: "gpt-4o-mini".to_string(),
+                        default: "qwen2.5:7b".to_string(),
                         required: true,
-                        placeholder: Some("gpt-4o-mini".to_string()),
+                        placeholder: Some("qwen2.5:7b".to_string()),
                         description: None,
                     },
                     ConfigField {
@@ -55,7 +46,7 @@ impl LlmTranslatePlugin {
                         default: "20".to_string(),
                         required: false,
                         placeholder: None,
-                        description: Some("Segments per API call".to_string()),
+                        description: Some("Segments per generation call".to_string()),
                     },
                 ],
             },
@@ -101,118 +92,74 @@ Translate the following {count} subtitle segments:
         context_hint: Option<&str>,
         config: &PluginConfig,
     ) -> Result<Vec<String>, TranslateError> {
-        let api_key = config.get("api_key");
         let base_url = config.get("base_url");
         let model = config.get("model");
-
-        if api_key.is_empty() {
-            return Err(TranslateError::InvalidApiKey);
-        }
-
         let prompt = Self::build_prompt(texts, source_lang, target_lang, context_hint);
 
         #[derive(Serialize)]
-        struct ChatRequest {
+        struct OllamaRequest {
             model: String,
-            messages: Vec<Message>,
-            temperature: f32,
-        }
-
-        #[derive(Serialize)]
-        struct Message {
-            role: String,
-            content: String,
+            prompt: String,
+            stream: bool,
         }
 
         #[derive(Deserialize)]
-        struct ChatResponse {
-            choices: Vec<Choice>,
+        struct OllamaResponse {
+            response: String,
         }
 
-        #[derive(Deserialize)]
-        struct Choice {
-            message: ResponseMessage,
-        }
-
-        #[derive(Deserialize)]
-        struct ResponseMessage {
-            content: String,
-        }
-
-        let request_body = ChatRequest {
+        let request_body = OllamaRequest {
             model: model.to_string(),
-            messages: vec![Message {
-                role: "user".to_string(),
-                content: prompt,
-            }],
-            temperature: 0.3,
+            prompt,
+            stream: false,
         };
 
-        let max_retries: u32 = 3;
-        let mut retries = 0;
+        let url = format!("{}/api/generate", base_url);
 
-        loop {
-            let response = self
-                .client
-                .post(format!("{}/chat/completions", base_url))
-                .header("Authorization", format!("Bearer {}", api_key))
-                .header("Content-Type", "application/json")
-                .json(&request_body)
-                .send()
-                .await
-                .map_err(|e| TranslateError::Network(e.to_string()))?;
+        let response = self
+            .client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .json(&request_body)
+            .send()
+            .await
+            .map_err(|e| TranslateError::Network(format!("Ollama connection failed: {}. Is Ollama running?", e)))?;
 
+        if !response.status().is_success() {
             let status = response.status().as_u16();
-
-            if status == 429 {
-                retries += 1;
-                if retries > max_retries {
-                    return Err(TranslateError::RateLimited { retry_after_secs: 60 });
-                }
-                tokio::time::sleep(std::time::Duration::from_secs(2u64.pow(retries))).await;
-                continue;
-            }
-
-            if !response.status().is_success() {
-                let body = response.text().await.unwrap_or_default();
-                return Err(TranslateError::Api { status, message: body });
-            }
-
-            let chat_response: ChatResponse = response
-                .json()
-                .await
-                .map_err(|e| TranslateError::Network(e.to_string()))?;
-
-            let content = chat_response
-                .choices
-                .first()
-                .map(|c| c.message.content.clone())
-                .unwrap_or_default();
-
-            let translations: Vec<String> = content
-                .lines()
-                .filter(|line| !line.trim().is_empty())
-                .map(|line| line.trim().to_string())
-                .collect();
-
-            if translations.len() != texts.len() {
-                tracing::warn!(
-                    "Translation count mismatch: expected {}, got {}. Padding/truncating.",
-                    texts.len(),
-                    translations.len()
-                );
-                let mut result = translations;
-                result.resize(texts.len(), "[Translation Error]".to_string());
-                return Ok(result);
-            }
-
-            return Ok(translations);
+            let body = response.text().await.unwrap_or_default();
+            return Err(TranslateError::Api { status, message: body });
         }
+
+        let ollama_resp: OllamaResponse = response
+            .json()
+            .await
+            .map_err(|e| TranslateError::Network(e.to_string()))?;
+
+        let translations: Vec<String> = ollama_resp
+            .response
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| line.trim().to_string())
+            .collect();
+
+        if translations.len() != texts.len() {
+            tracing::warn!(
+                "Translation count mismatch: expected {}, got {}. Padding/truncating.",
+                texts.len(),
+                translations.len()
+            );
+            let mut result = translations;
+            result.resize(texts.len(), "[Translation Error]".to_string());
+            return Ok(result);
+        }
+
+        Ok(translations)
     }
 }
 
 #[async_trait]
-impl TranslationPlugin for LlmTranslatePlugin {
+impl TranslationPlugin for OllamaTranslatePlugin {
     fn metadata(&self) -> &PluginMetadata {
         &self.metadata
     }
@@ -229,7 +176,7 @@ impl TranslationPlugin for LlmTranslatePlugin {
 
         for (batch_idx, chunk) in request.texts.chunks(batch_size).enumerate() {
             tracing::info!(
-                "Translating batch {}/{} ({} segments)",
+                "Ollama translating batch {}/{} ({} segments)",
                 batch_idx + 1,
                 (total + batch_size - 1) / batch_size,
                 chunk.len()
@@ -261,23 +208,17 @@ impl TranslationPlugin for LlmTranslatePlugin {
     }
 
     async fn health_check(&self, config: &PluginConfig) -> HealthStatus {
-        let api_key = config.get("api_key");
         let base_url = config.get("base_url");
-        if api_key.is_empty() {
-            return HealthStatus::Unhealthy("API key not configured".to_string());
-        }
         match self
             .client
-            .get(format!("{}/models", base_url))
-            .header("Authorization", format!("Bearer {}", api_key))
-            .timeout(std::time::Duration::from_secs(5))
+            .get(format!("{}/api/tags", base_url))
+            .timeout(std::time::Duration::from_secs(3))
             .send()
             .await
         {
             Ok(resp) if resp.status().is_success() => HealthStatus::Healthy,
-            Ok(resp) if resp.status().as_u16() == 401 => HealthStatus::Unhealthy("Invalid API key".to_string()),
             Ok(resp) => HealthStatus::Degraded(format!("HTTP {}", resp.status())),
-            Err(e) => HealthStatus::Unhealthy(e.to_string()),
+            Err(e) => HealthStatus::Unhealthy(format!("Cannot connect: {}. Is Ollama running?", e)),
         }
     }
 }

@@ -1,38 +1,49 @@
-// ============================================================
-// translate/deepl.rs — DeepL API translation
-// ============================================================
-
 use super::engine::*;
+use super::plugin::*;
 use crate::error::TranslateError;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
-pub struct DeepLTranslateEngine {
+pub struct DeepLTranslatePlugin {
+    metadata: PluginMetadata,
     client: reqwest::Client,
-    api_key: String,
-    is_free: bool,
 }
 
-impl DeepLTranslateEngine {
-    pub fn new(api_key: String) -> Self {
-        let is_free = api_key.ends_with(":fx");
+impl DeepLTranslatePlugin {
+    pub fn new() -> Self {
         Self {
+            metadata: PluginMetadata {
+                namespace: "deepl/v1".to_string(),
+                display_name: "DeepL".to_string(),
+                description: "High-quality translation via DeepL API (free or pro)".to_string(),
+                version: "1.0.0".to_string(),
+                category: PluginCategory::RemoteApi,
+                requires_network: true,
+                config_schema: vec![
+                    ConfigField {
+                        key: "api_key".to_string(),
+                        label: "DeepL API Key".to_string(),
+                        field_type: ConfigFieldType::Password,
+                        default: String::new(),
+                        required: true,
+                        placeholder: Some("Use :fx suffix for free tier".to_string()),
+                        description: Some("Get your key at deepl.com/pro#developer".to_string()),
+                    },
+                ],
+            },
             client: reqwest::Client::new(),
-            api_key,
-            is_free,
         }
     }
 
-    fn base_url(&self) -> &str {
-        if self.is_free {
+    fn base_url(api_key: &str) -> &str {
+        if api_key.ends_with(":fx") {
             "https://api-free.deepl.com/v2"
         } else {
             "https://api.deepl.com/v2"
         }
     }
 
-    /// Map ISO 639-1 to DeepL language code
     fn to_deepl_lang(lang: &str) -> String {
         match lang {
             "en" => "EN".to_string(),
@@ -51,14 +62,21 @@ impl DeepLTranslateEngine {
 }
 
 #[async_trait]
-impl TranslateEngine for DeepLTranslateEngine {
+impl TranslationPlugin for DeepLTranslatePlugin {
+    fn metadata(&self) -> &PluginMetadata {
+        &self.metadata
+    }
+
     async fn translate(
         &self,
         request: &TranslateRequest,
+        config: &PluginConfig,
         progress_tx: mpsc::Sender<TranslateProgress>,
     ) -> Result<TranslateResult, TranslateError> {
-        // DeepL supports batch translation natively
-        // Max 50 texts per request
+        let api_key = config.get("api_key");
+        if api_key.is_empty() {
+            return Err(TranslateError::InvalidApiKey);
+        }
 
         let total = request.texts.len();
         let mut all_translations = Vec::with_capacity(total);
@@ -89,8 +107,8 @@ impl TranslateEngine for DeepLTranslateEngine {
 
             let response = self
                 .client
-                .post(format!("{}/translate", self.base_url()))
-                .header("Authorization", format!("DeepL-Auth-Key {}", self.api_key))
+                .post(format!("{}/translate", Self::base_url(api_key)))
+                .header("Authorization", format!("DeepL-Auth-Key {}", api_key))
                 .json(&body)
                 .send()
                 .await
@@ -99,10 +117,10 @@ impl TranslateEngine for DeepLTranslateEngine {
             if !response.status().is_success() {
                 let status = response.status().as_u16();
                 let body = response.text().await.unwrap_or_default();
-                return Err(TranslateError::Api {
-                    status,
-                    message: body,
-                });
+                if status == 403 {
+                    return Err(TranslateError::InvalidApiKey);
+                }
+                return Err(TranslateError::Api { status, message: body });
             }
 
             let deepl_resp: DeepLResponse = response
@@ -112,31 +130,37 @@ impl TranslateEngine for DeepLTranslateEngine {
 
             all_translations.extend(deepl_resp.translations.into_iter().map(|t| t.text));
 
-            let _ = progress_tx
-                .send(TranslateProgress {
-                    percent: (all_translations.len() as f32 / total as f32) * 100.0,
-                    translated_count: all_translations.len(),
-                    total_count: total,
-                })
-                .await;
+            let _ = progress_tx.send(TranslateProgress {
+                percent: (all_translations.len() as f32 / total as f32) * 100.0,
+                translated_count: all_translations.len(),
+                total_count: total,
+            }).await;
         }
 
         Ok(TranslateResult {
             texts: all_translations,
-            engine: self.name().to_string(),
+            engine: self.metadata.namespace.clone(),
         })
     }
 
-    fn name(&self) -> &str {
-        "DeepL"
-    }
-
-    fn requires_network(&self) -> bool {
-        true
-    }
-
-    fn supported_pairs(&self) -> Vec<(String, String)> {
-        // DeepL supports many pairs but not all combinations
-        vec![]
+    async fn health_check(&self, config: &PluginConfig) -> HealthStatus {
+        let api_key = config.get("api_key");
+        if api_key.is_empty() {
+            return HealthStatus::Unhealthy("API key not configured".to_string());
+        }
+        let url = format!("{}/usage", Self::base_url(api_key));
+        match self
+            .client
+            .get(&url)
+            .header("Authorization", format!("DeepL-Auth-Key {}", api_key))
+            .timeout(std::time::Duration::from_secs(5))
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => HealthStatus::Healthy,
+            Ok(resp) if resp.status().as_u16() == 403 => HealthStatus::Unhealthy("Invalid API key".to_string()),
+            Ok(resp) => HealthStatus::Degraded(format!("HTTP {}", resp.status())),
+            Err(e) => HealthStatus::Unhealthy(e.to_string()),
+        }
     }
 }
