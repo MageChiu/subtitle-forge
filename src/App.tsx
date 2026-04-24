@@ -8,7 +8,8 @@ import { LanguageSelector } from "./components/LanguageSelector";
 import { SubtitlePreview } from "./components/SubtitlePreview";
 import { usePipeline, PipelineConfig } from "./hooks/usePipeline";
 import { useLogs } from "./hooks/useLogs";
-import type { AllPluginConfigs } from "./types/translation";
+import type { AppConfig } from "./types/appConfig";
+import type { TranslationSettings } from "./types/translation";
 
 interface ModelInfo {
   key: string;
@@ -32,7 +33,8 @@ function App() {
   const [skipTranslation, setSkipTranslation] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [modelError, setModelError] = useState<string | null>(null);
-  const [activePlugin, setActivePlugin] = useState("google/v1");
+  const [activeService, setActiveService] = useState("deepseek");
+  const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
 
   const loadModels = async () => {
     try {
@@ -43,19 +45,29 @@ function App() {
     }
   };
 
-  const loadPluginConfigs = useCallback(async () => {
+  const loadTranslateSettings = useCallback(async () => {
     try {
-      const configs = await invoke<AllPluginConfigs>("get_plugin_configs");
-      setActivePlugin(configs.active_plugin);
+      const settings = await invoke<TranslationSettings>("get_translate_settings");
+      setActiveService(settings.active_service);
     } catch (err) {
-      console.error("Failed to load plugin configs:", err);
+      console.error("Failed to load translate settings:", err);
+    }
+  }, []);
+
+  const loadAppConfig = useCallback(async () => {
+    try {
+      const config = await invoke<AppConfig>("get_app_config");
+      setAppConfig(config);
+    } catch (err) {
+      console.error("Failed to load app config:", err);
     }
   }, []);
 
   useEffect(() => {
     loadModels();
-    loadPluginConfigs();
-  }, [loadPluginConfigs]);
+    loadTranslateSettings();
+    loadAppConfig();
+  }, [loadAppConfig, loadTranslateSettings]);
 
   const selectedModelInfo = models.find((m) => m.key === asrModel);
   const modelNotDownloaded = selectedModelInfo && !selectedModelInfo.downloaded;
@@ -79,8 +91,9 @@ function App() {
       target_language: targetLang,
       output_format: outputFormat,
       asr_model: asrModel,
-      translate_engine: activePlugin,
-      use_gpu: false,
+      translate_engine: activeService,
+      use_gpu: appConfig?.general.use_gpu ?? false,
+      n_threads: appConfig?.asr.n_threads ?? null,
       skip_translation: skipTranslation,
     };
 
@@ -275,9 +288,14 @@ function App() {
         </section>
       )}
 
-      {stage.type === "Completed" && stage.output_path && (
+      {stage.type === "Completed" &&
+        (stage.bilingual_output_path || stage.source_output_path || stage.output_path) && (
         <section className="mb-6">
-          <SubtitlePreview filePath={stage.output_path} />
+          <SubtitlePreview
+            filePath={
+              stage.bilingual_output_path || stage.source_output_path || stage.output_path || ""
+            }
+          />
         </section>
       )}
 
@@ -285,12 +303,14 @@ function App() {
         <SettingsDialog
           onClose={() => {
             setShowSettings(false);
-            loadPluginConfigs();
+            loadAppConfig();
+            loadTranslateSettings();
           }}
           onModelChange={() => {
             loadModels();
             setModelError(null);
-            loadPluginConfigs();
+            loadAppConfig();
+            loadTranslateSettings();
           }}
         />
       )}

@@ -4,6 +4,7 @@
 
 use crate::audio::extractor::{AudioExtractor, ExtractConfig};
 use crate::asr::engine::{AsrConfig, AsrEngine};
+use crate::config::settings::recommended_asr_threads;
 use crate::error::AppError;
 use crate::subtitle::ass::{AssStyle, AssWriter};
 use crate::subtitle::merger::SubtitleMerger;
@@ -13,6 +14,10 @@ use crate::subtitle::vtt::VttWriter;
 use crate::translate::engine::{TranslateEngine, TranslateRequest};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use tokio::sync::mpsc;
 
 /// Pipeline task configuration (from frontend)
@@ -26,6 +31,7 @@ pub struct PipelineConfig {
     pub asr_model: String,
     pub translate_engine: String,
     pub use_gpu: bool,
+    pub n_threads: Option<u32>,
     pub skip_translation: bool,
 }
 
@@ -58,6 +64,8 @@ pub enum PipelineStage {
     #[serde(rename = "completed")]
     Completed {
         output_path: String,
+        source_output_path: String,
+        bilingual_output_path: Option<String>,
         segment_count: usize,
         duration_ms: u64,
     },
@@ -74,6 +82,7 @@ pub struct PipelineOrchestrator {
     asr_engine: Box<dyn AsrEngine>,
     translate_engine: Box<dyn TranslateEngine>,
     tmp_dir: PathBuf,
+    cache_dir: PathBuf,
 }
 
 impl PipelineOrchestrator {
@@ -81,11 +90,13 @@ impl PipelineOrchestrator {
         asr_engine: Box<dyn AsrEngine>,
         translate_engine: Box<dyn TranslateEngine>,
         tmp_dir: PathBuf,
+        cache_dir: PathBuf,
     ) -> Self {
         Self {
             asr_engine,
             translate_engine,
             tmp_dir,
+            cache_dir,
         }
     }
 
@@ -99,11 +110,13 @@ impl PipelineOrchestrator {
         match self.run_inner(config, stage_tx.clone(), cancel_rx).await {
             Ok(output) => Ok(output),
             Err(e) => {
-                let _ = stage_tx
-                    .send(PipelineStage::Failed {
-                        error: e.to_string(),
-                    })
-                    .await;
+                if !matches!(&e, AppError::Pipeline(message) if message == "Cancelled") {
+                    let _ = stage_tx
+                        .send(PipelineStage::Failed {
+                            error: e.to_string(),
+                        })
+                        .await;
+                }
                 Err(e)
             }
         }
@@ -117,6 +130,11 @@ impl PipelineOrchestrator {
     ) -> Result<String, AppError> {
         let input_path = Path::new(&config.input_path);
         let output_dir = Path::new(&config.output_dir);
+        let input_stem = input_path
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
 
         // =============== Stage 1: Audio Extraction ===============
         tracing::info!("Stage 1: Extracting audio from {:?}", input_path);
@@ -162,20 +180,50 @@ impl PipelineOrchestrator {
             }
         });
 
+        let asr_cancel_flag = Arc::new(AtomicBool::new(false));
+        let asr_cancel_flag_task = asr_cancel_flag.clone();
+        let mut asr_cancel_rx = cancel_rx.clone();
+        tokio::spawn(async move {
+            loop {
+                if *asr_cancel_rx.borrow() {
+                    asr_cancel_flag_task.store(true, Ordering::Relaxed);
+                    break;
+                }
+                if asr_cancel_rx.changed().await.is_err() {
+                    break;
+                }
+            }
+        });
+
         let asr_config = AsrConfig {
             model_path: PathBuf::from(&config.asr_model),
             language: config.source_language.clone(),
             translate_to_english: false,
-            n_threads: num_cpus::get() as u32,
+            n_threads: config
+                .n_threads
+                .filter(|threads| *threads > 0)
+                .unwrap_or_else(recommended_asr_threads),
             use_gpu: config.use_gpu,
+            debug_output_dir: if cfg!(debug_assertions) {
+                Some(self.cache_dir.clone())
+            } else {
+                None
+            },
             ..Default::default()
         };
 
-        let segments = self
+        let segments = match self
             .asr_engine
-            .transcribe(&audio_path, &asr_config, asr_progress_tx)
+            .transcribe(&audio_path, &asr_config, asr_progress_tx, asr_cancel_flag.clone())
             .await
-            .map_err(AppError::Asr)?;
+        {
+            Ok(segments) => segments,
+            Err(_e) if asr_cancel_flag.load(Ordering::Relaxed) => {
+                let _ = stage_tx.send(PipelineStage::Cancelled).await;
+                return Err(AppError::Pipeline("Cancelled".into()));
+            }
+            Err(e) => return Err(AppError::Asr(e)),
+        };
 
         tracing::info!("ASR complete: {} segments", segments.len());
 
@@ -195,17 +243,42 @@ impl PipelineOrchestrator {
             .as_deref()
             .unwrap_or_else(|| &segments[0].language);
 
-        // =============== Stage 3: Translation (optional) ===============
-        let subtitle = if config.skip_translation {
-            tracing::info!(
-                "Stage 3: Skipping translation (monolingual mode, {} segments, lang={})",
-                segments.len(),
-                source_lang
-            );
-            SubtitleMerger::from_segments(&segments, source_lang, config.output_format)
+        // =============== Stage 3: Generate source-language subtitle first ===============
+        tracing::info!(
+            "Stage 3: Generating source-language subtitle first ({} segments, lang={})",
+            segments.len(),
+            source_lang
+        );
+        let _ = stage_tx.send(PipelineStage::GeneratingSubtitle).await;
+
+        let source_subtitle =
+            SubtitleMerger::from_segments(&segments, source_lang, config.output_format);
+        let source_output_filename = format!(
+            "{}.{}.{}",
+            input_stem,
+            source_lang,
+            config.output_format.extension()
+        );
+        let source_output_path = output_dir.join(&source_output_filename);
+        self.write_subtitle_file(output_dir, &source_output_path, &source_subtitle, config.output_format)
+            .await?;
+        tracing::info!(
+            "Source-language subtitle generated: {}",
+            source_output_path.to_string_lossy()
+        );
+
+        if *cancel_rx.borrow() {
+            let _ = stage_tx.send(PipelineStage::Cancelled).await;
+            return Err(AppError::Pipeline("Cancelled".into()));
+        }
+
+        // =============== Stage 4: Translation (optional) ===============
+        let bilingual_output_path = if config.skip_translation {
+            tracing::info!("Stage 4: Skipping translation, keeping source-language subtitle only");
+            None
         } else {
             tracing::info!(
-                "Stage 3: Translating {} segments ({} -> {})",
+                "Stage 4: Translating {} segments ({} -> {})",
                 segments.len(),
                 source_lang,
                 config.target_language
@@ -244,51 +317,49 @@ impl PipelineOrchestrator {
                 .await
                 .map_err(AppError::Translate)?;
 
-            SubtitleMerger::merge(
+            let bilingual_subtitle = SubtitleMerger::merge(
                 &segments,
                 &translation,
                 source_lang,
                 &config.target_language,
                 config.output_format,
             )
-            .map_err(AppError::Subtitle)?
+            .map_err(AppError::Subtitle)?;
+
+            if *cancel_rx.borrow() {
+                let _ = stage_tx.send(PipelineStage::Cancelled).await;
+                return Err(AppError::Pipeline("Cancelled".into()));
+            }
+
+            // =============== Stage 5: Generate bilingual subtitle ===============
+            tracing::info!("Stage 5: Generating bilingual subtitle");
+            let _ = stage_tx.send(PipelineStage::GeneratingSubtitle).await;
+
+            let bilingual_output_filename = format!(
+                "{}.{}-{}.{}",
+                input_stem,
+                source_lang,
+                config.target_language,
+                config.output_format.extension()
+            );
+            let bilingual_output_path = output_dir.join(&bilingual_output_filename);
+            self.write_subtitle_file(
+                output_dir,
+                &bilingual_output_path,
+                &bilingual_subtitle,
+                config.output_format,
+            )
+            .await?;
+            tracing::info!(
+                "Bilingual subtitle generated: {}",
+                bilingual_output_path.to_string_lossy()
+            );
+            Some(bilingual_output_path)
         };
-
-        // Check cancellation
-        if *cancel_rx.borrow() {
-            let _ = stage_tx.send(PipelineStage::Cancelled).await;
-            return Err(AppError::Pipeline("Cancelled".into()));
-        }
-
-        // =============== Stage 4: Generate Subtitle File ===============
-        tracing::info!("Stage 4: Generating {:?} subtitle", config.output_format);
-        let _ = stage_tx.send(PipelineStage::GeneratingSubtitle).await;
-
-        let output_content = match config.output_format {
-            SubtitleFormat::Srt => SrtWriter::write(&subtitle),
-            SubtitleFormat::Ass => AssWriter::write(&subtitle, &AssStyle::default()),
-            SubtitleFormat::Vtt => VttWriter::write(&subtitle),
-        };
-
-        let input_stem = input_path
-            .file_stem()
-            .unwrap_or_default()
-            .to_string_lossy();
-        let output_filename = if config.skip_translation {
-            format!("{}.{}.{}", input_stem, source_lang, config.output_format.extension())
-        } else {
-            format!("{}.{}-{}.{}", input_stem, source_lang, config.target_language, config.output_format.extension())
-        };
-        let output_path = output_dir.join(&output_filename);
-
-        // Ensure output directory exists
-        tokio::fs::create_dir_all(output_dir).await?;
-
-        // Write with BOM for SRT/ASS (better compatibility with Asian text)
-        let content_with_bom = format!("\u{FEFF}{}", output_content);
-        tokio::fs::write(&output_path, content_with_bom.as_bytes()).await?;
-
-        let output_str = output_path.to_string_lossy().to_string();
+        let final_output_path = bilingual_output_path
+            .as_ref()
+            .unwrap_or(&source_output_path);
+        let output_str = final_output_path.to_string_lossy().to_string();
         let duration_ms = segments.last().map(|s| s.end_ms).unwrap_or(0);
 
         tracing::info!("Pipeline complete! Output: {}", output_str);
@@ -296,6 +367,10 @@ impl PipelineOrchestrator {
         let _ = stage_tx
             .send(PipelineStage::Completed {
                 output_path: output_str.clone(),
+                source_output_path: source_output_path.to_string_lossy().to_string(),
+                bilingual_output_path: bilingual_output_path
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().to_string()),
                 segment_count: segments.len(),
                 duration_ms,
             })
@@ -307,5 +382,24 @@ impl PipelineOrchestrator {
         }
 
         Ok(output_str)
+    }
+
+    async fn write_subtitle_file(
+        &self,
+        output_dir: &Path,
+        output_path: &Path,
+        subtitle: &SubtitleFile,
+        format: SubtitleFormat,
+    ) -> Result<(), AppError> {
+        let output_content = match format {
+            SubtitleFormat::Srt => SrtWriter::write(subtitle),
+            SubtitleFormat::Ass => AssWriter::write(subtitle, &AssStyle::default()),
+            SubtitleFormat::Vtt => VttWriter::write(subtitle),
+        };
+
+        tokio::fs::create_dir_all(output_dir).await?;
+        let content_with_bom = format!("\u{FEFF}{}", output_content);
+        tokio::fs::write(output_path, content_with_bom.as_bytes()).await?;
+        Ok(())
     }
 }

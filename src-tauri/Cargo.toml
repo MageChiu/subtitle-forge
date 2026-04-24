@@ -30,6 +30,7 @@ ffmpeg-next = "8"
 
 # ASR
 whisper-rs = "0.12"
+fast-vad = "0.2.1"
 
 # Translation (online)
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"] }
@@ -64,6 +65,11 @@ hipblas = ["whisper-rs/hipblas"]    # AMD GPU
 opencl = ["whisper-rs/opencl"]      # OpenCL
 coreml = ["whisper-rs/coreml"]      # Apple CoreML
 openblas = ["whisper-rs/openblas"]  # CPU BLAS 加速
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# On macOS, enable Whisper Metal by default so `cargo tauri build`
+# matches the optimized runtime path without requiring extra features.
+whisper-rs = { version = "0.12", features = ["metal"] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

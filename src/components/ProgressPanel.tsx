@@ -74,9 +74,19 @@ export function ProgressPanel({ stage }: ProgressPanelProps) {
               {stage.segment_count} subtitle segments generated
             </p>
           )}
-          {stage.output_path && (
+          {stage.source_output_path && (
             <p className="text-sm text-green-600 dark:text-green-500 font-mono text-xs break-all">
-              📁 {stage.output_path}
+              原语言字幕: {stage.source_output_path}
+            </p>
+          )}
+          {stage.bilingual_output_path && (
+            <p className="text-sm text-green-600 dark:text-green-500 font-mono text-xs break-all">
+              双语字幕: {stage.bilingual_output_path}
+            </p>
+          )}
+          {stage.output_path && !stage.bilingual_output_path && (
+            <p className="text-sm text-green-600 dark:text-green-500 font-mono text-xs break-all">
+              输出文件: {stage.output_path}
             </p>
           )}
         </div>

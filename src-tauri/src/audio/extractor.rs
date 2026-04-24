@@ -1,6 +1,8 @@
 use crate::error::AudioError;
+use crate::config::settings::recommended_asr_threads;
 use serde::Serialize;
 use std::io::Write;
+use std::mem::size_of;
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
 
@@ -171,10 +173,24 @@ impl AudioExtractor {
 
         drop(audio_stream);
 
-        let mut decoder = codec_ctx
-            .decoder()
+        let mut decoder_builder = codec_ctx.decoder();
+        let decode_threads = recommended_asr_threads() as usize;
+        let mut decode_threading = ffmpeg_next::codec::threading::Config::count(decode_threads);
+        decode_threading.kind = ffmpeg_next::codec::threading::Type::Frame;
+        decoder_builder.set_threading(decode_threading);
+
+        let mut decoder = decoder_builder
             .audio()
             .map_err(|e| AudioError::Ffmpeg(format!("Failed to open audio decoder: {}", e)))?;
+
+        let active_threading = decoder.threading();
+        tracing::info!(
+            "Audio decoder threading: requested={} kind={:?}, active={} kind={:?}",
+            decode_threads,
+            decode_threading.kind,
+            active_threading.count,
+            active_threading.kind
+        );
 
         let mut resampler = ffmpeg_next::software::resampling::Context::get(
             decoder.format(),
@@ -188,7 +204,9 @@ impl AudioExtractor {
         )
         .map_err(|e| AudioError::Ffmpeg(format!("Failed to create resampler: {}", e)))?;
 
-        let mut pcm_data: Vec<i16> = Vec::new();
+        let estimated_samples = ((duration_ms as usize).saturating_mul(config.sample_rate as usize) / 1000)
+            .max(16_000);
+        let mut pcm_data: Vec<i16> = Vec::with_capacity(estimated_samples);
         let mut decoded_frame = ffmpeg_next::util::frame::Audio::empty();
         let mut resampled_frame = ffmpeg_next::util::frame::Audio::empty();
 
@@ -201,13 +219,7 @@ impl AudioExtractor {
                     resampler.run(&decoded_frame, &mut resampled_frame)
                         .map_err(|e| AudioError::Ffmpeg(format!("Resample error: {}", e)))?;
 
-                    let data = resampled_frame.data(0);
-                    let samples = data.chunks_exact(2)
-                        .filter_map(|chunk| {
-                            let bytes = [chunk[0], chunk[1]];
-                            Some(i16::from_le_bytes(bytes))
-                        });
-                    pcm_data.extend(samples);
+                    Self::append_i16_samples(&mut pcm_data, resampled_frame.data(0));
 
                     if duration_ms > 0 {
                         let ts_ms = decoded_frame.pts()
@@ -232,13 +244,7 @@ impl AudioExtractor {
         while decoder.receive_frame(&mut decoded_frame).is_ok() {
             resampler.run(&decoded_frame, &mut resampled_frame)
                 .map_err(|e| AudioError::Ffmpeg(format!("Resample flush error: {}", e)))?;
-            let data = resampled_frame.data(0);
-            let samples = data.chunks_exact(2)
-                .filter_map(|chunk| {
-                    let bytes = [chunk[0], chunk[1]];
-                    Some(i16::from_le_bytes(bytes))
-                });
-            pcm_data.extend(samples);
+            Self::append_i16_samples(&mut pcm_data, resampled_frame.data(0));
         }
 
         tracing::info!("Decoded {} PCM samples ({}ms at {}Hz)",
@@ -303,10 +309,14 @@ impl AudioExtractor {
         file.write_all(&data_size.to_le_bytes())
             .map_err(|e| AudioError::Ffmpeg(format!("WAV write error: {}", e)))?;
 
-        let bytes: Vec<u8> = samples.iter()
-            .flat_map(|s| s.to_le_bytes())
-            .collect();
-        file.write_all(&bytes)
+        // i16 PCM is written as a contiguous little-endian byte slice.
+        let bytes = unsafe {
+            std::slice::from_raw_parts(
+                samples.as_ptr() as *const u8,
+                std::mem::size_of_val(samples),
+            )
+        };
+        file.write_all(bytes)
             .map_err(|e| AudioError::Ffmpeg(format!("WAV write error: {}", e)))?;
 
         file.flush()
@@ -316,5 +326,12 @@ impl AudioExtractor {
             data_size + 44, sample_rate, channels, samples.len());
 
         Ok(())
+    }
+
+    fn append_i16_samples(buffer: &mut Vec<i16>, data: &[u8]) {
+        buffer.reserve(data.len() / size_of::<i16>());
+        for chunk in data.chunks_exact(size_of::<i16>()) {
+            buffer.push(i16::from_le_bytes([chunk[0], chunk[1]]));
+        }
     }
 }
