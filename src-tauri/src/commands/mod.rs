@@ -5,9 +5,14 @@ use crate::audio::extractor::MediaInfo;
 use crate::config::settings::AppConfig;
 use crate::pipeline::orchestrator::{PipelineConfig, PipelineOrchestrator, PipelineStage};
 use crate::translate::{
-    create_registry, AllPluginConfigs, PluginConfig, PluginInfo, SharedRegistry,
-    TranslateEngine, TranslateProgress, TranslateRequest, TranslateResult,
+    build_factory, default_settings, HealthStatus, ServiceInfo, SharedFactory, TranslateEngine,
+    TranslateMode, TranslateModeInfo, TranslateProgress, TranslateRequest, TranslateResult,
+    TranslationSettings,
 };
+use crate::translate::services::embedded_llm::models::{
+    EmbeddedDownloadProgress, EmbeddedModelInfo, EmbeddedModelManager,
+};
+use chrono::Utc;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
@@ -17,55 +22,59 @@ pub struct AppState {
     pub models_dir: PathBuf,
     pub tmp_dir: PathBuf,
     pub cache_dir: PathBuf,
+    pub config_path: PathBuf,
     pub cancel_tx: Arc<Mutex<Option<watch::Sender<bool>>>>,
     pub is_running: Arc<std::sync::atomic::AtomicBool>,
-    pub plugin_configs: Arc<Mutex<AllPluginConfigs>>,
-    pub plugin_registry: SharedRegistry,
+    pub app_config: Arc<Mutex<AppConfig>>,
+    pub translation_settings: Arc<Mutex<TranslationSettings>>,
+    pub translate_factory: SharedFactory,
 }
 
 impl AppState {
-    pub fn new(models_dir: PathBuf, tmp_dir: PathBuf, cache_dir: PathBuf) -> Self {
+    pub fn new(models_dir: PathBuf, tmp_dir: PathBuf, cache_dir: PathBuf, config_path: PathBuf) -> Self {
+        let factory_impl = build_factory(models_dir.clone());
+        let settings = default_settings(&factory_impl);
+        let factory = Arc::new(tokio::sync::RwLock::new(factory_impl));
+        let app_config = AppConfig::load_or_default(&config_path);
+
         Self {
             models_dir,
             tmp_dir,
             cache_dir,
+            config_path,
             cancel_tx: Arc::new(Mutex::new(None)),
             is_running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            plugin_configs: Arc::new(Mutex::new(AllPluginConfigs::default())),
-            plugin_registry: create_registry(),
+            app_config: Arc::new(Mutex::new(app_config)),
+            translation_settings: Arc::new(Mutex::new(settings)),
+            translate_factory: factory,
         }
     }
 }
 
-struct PluginTranslateAdapter {
-    namespace: String,
-    config: PluginConfig,
+struct ServiceTranslateAdapter {
+    factory: SharedFactory,
+    settings: TranslationSettings,
 }
 
 #[async_trait::async_trait]
-impl TranslateEngine for PluginTranslateAdapter {
+impl TranslateEngine for ServiceTranslateAdapter {
     async fn translate(
         &self,
         request: &TranslateRequest,
         progress_tx: mpsc::Sender<TranslateProgress>,
     ) -> Result<TranslateResult, crate::error::TranslateError> {
-        let registry = crate::translate::create_registry();
-        crate::translate::translate_with_plugin(
-            &registry,
-            &self.namespace,
-            request,
-            &self.config,
-            progress_tx,
-        )
-        .await
+        let factory = self.factory.read().await;
+        factory
+            .translate_with_fallback(&self.settings, request, progress_tx)
+            .await
     }
 
     fn name(&self) -> &str {
-        &self.namespace
+        &self.settings.active_service
     }
 
     fn requires_network(&self) -> bool {
-        true
+        matches!(self.settings.active_mode, TranslateMode::OnlineLlm)
     }
 
     fn supported_pairs(&self) -> Vec<(String, String)> {
@@ -77,7 +86,7 @@ impl TranslateEngine for PluginTranslateAdapter {
 pub async fn start_pipeline(
     app: AppHandle,
     state: State<'_, AppState>,
-    config: PipelineConfig,
+    mut config: PipelineConfig,
 ) -> Result<String, String> {
     if state
         .is_running
@@ -87,7 +96,9 @@ pub async fn start_pipeline(
     }
 
     let manager = ModelManager::new(state.models_dir.clone());
-    manager.check_model(&config.asr_model)?;
+    let model_path = manager
+        .check_model(&config.asr_model)
+        .map_err(|e| e.to_string())?;
 
     state
         .is_running
@@ -100,7 +111,6 @@ pub async fn start_pipeline(
     }
 
     let (stage_tx, mut stage_rx) = mpsc::channel::<PipelineStage>(64);
-
     let app_clone = app.clone();
     tokio::spawn(async move {
         while let Some(stage) = stage_rx.recv().await {
@@ -108,18 +118,20 @@ pub async fn start_pipeline(
         }
     });
 
-    let models_dir = state.models_dir.clone();
     let tmp_dir = state.tmp_dir.clone();
+    let cache_dir = state.cache_dir.clone();
     let is_running = state.is_running.clone();
-    let plugin_namespace = config.translate_engine.clone();
-    let plugin_config = {
-        let all_configs = state.plugin_configs.lock().await;
-        all_configs
-            .configs
-            .get(&plugin_namespace)
-            .cloned()
-            .unwrap_or_else(|| PluginConfig::new(&plugin_namespace))
-    };
+    let app_config = state.app_config.lock().await.clone();
+    let translate_factory = state.translate_factory.clone();
+    let mut translation_settings = state.translation_settings.lock().await.clone();
+    translation_settings.active_service = config.translate_engine.clone();
+    if let Some(service) = translate_factory.read().await.get(&translation_settings.active_service) {
+        translation_settings.active_mode = service.descriptor().mode;
+    }
+
+    if config.n_threads.unwrap_or(0) == 0 {
+        config.n_threads = Some(app_config.resolved_asr_threads());
+    }
 
     tokio::spawn(async move {
         tracing::info!("Pipeline started for: {}", config.input_path);
@@ -128,30 +140,34 @@ pub async fn start_pipeline(
             config.source_language,
             config.target_language
         );
-        tracing::info!("Translation plugin: {}", plugin_namespace);
-
-        let model_path = models_dir.join("whisper").join(format!(
-            "ggml-{}.bin",
-            config.asr_model
-        ));
+        tracing::info!(
+            "Translation selection: mode={}, service={}",
+            translation_settings.active_mode.key(),
+            translation_settings.active_service
+        );
+        tracing::info!(
+            "ASR runtime config: gpu={}, threads={}",
+            config.use_gpu,
+            config.n_threads.unwrap_or(0)
+        );
 
         let asr_engine = WhisperEngine::new(model_path, config.use_gpu);
 
-        let translate_engine = Box::new(PluginTranslateAdapter {
-            namespace: plugin_namespace.clone(),
-            config: plugin_config,
+        let translate_engine = Box::new(ServiceTranslateAdapter {
+            factory: translate_factory,
+            settings: translation_settings,
         });
 
         let orchestrator = PipelineOrchestrator::new(
             Box::new(asr_engine),
             translate_engine,
             tmp_dir,
+            cache_dir,
         );
 
         let result = orchestrator.run(config, stage_tx, cancel_rx).await;
-
-        if let Err(e) = result {
-            tracing::error!("Pipeline failed: {}", e);
+        if let Err(err) = result {
+            tracing::error!("Pipeline failed: {}", err);
         }
 
         is_running.store(false, std::sync::atomic::Ordering::Relaxed);
@@ -182,10 +198,9 @@ pub async fn download_model(
     model_key: String,
 ) -> Result<String, String> {
     let manager = ModelManager::new(state.models_dir.clone());
-
     let (progress_tx, mut progress_rx) = mpsc::channel::<DownloadProgress>(32);
-
     let app_clone = app.clone();
+
     tokio::spawn(async move {
         while let Some(progress) = progress_rx.recv().await {
             let _ = app_clone.emit("model-download-progress", &progress);
@@ -228,6 +243,63 @@ pub async fn open_model_directory(state: State<'_, AppState>) -> Result<(), Stri
 }
 
 #[tauri::command]
+pub async fn list_embedded_models(state: State<'_, AppState>) -> Result<Vec<EmbeddedModelInfo>, String> {
+    let manager = EmbeddedModelManager::new(state.models_dir.clone());
+    Ok(manager.list_models())
+}
+
+#[tauri::command]
+pub async fn download_embedded_model(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    model_key: String,
+) -> Result<String, String> {
+    let manager = EmbeddedModelManager::new(state.models_dir.clone());
+    let (progress_tx, mut progress_rx) = mpsc::channel::<EmbeddedDownloadProgress>(32);
+    let app_clone = app.clone();
+
+    tokio::spawn(async move {
+        while let Some(progress) = progress_rx.recv().await {
+            let _ = app_clone.emit("embedded-model-download-progress", &progress);
+        }
+    });
+
+    manager.download_model(&model_key, progress_tx).await
+}
+
+#[tauri::command]
+pub async fn open_embedded_model_directory(state: State<'_, AppState>) -> Result<(), String> {
+    let models_dir = state.models_dir.join("embedded_llm");
+    std::fs::create_dir_all(&models_dir).map_err(|e| format!("Failed to create dir: {}", e))?;
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&models_dir)
+            .spawn()
+            .map_err(|e| format!("Failed to open directory: {}", e))?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&models_dir)
+            .spawn()
+            .map_err(|e| format!("Failed to open directory: {}", e))?;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(&models_dir)
+            .spawn()
+            .map_err(|e| format!("Failed to open directory: {}", e))?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn check_model_exists(
     state: State<'_, AppState>,
     model_key: String,
@@ -237,41 +309,130 @@ pub async fn check_model_exists(
 }
 
 #[tauri::command]
-pub async fn list_translate_plugins(state: State<'_, AppState>) -> Result<Vec<PluginInfo>, String> {
-    let registry = state.plugin_registry.read().await;
-    Ok(registry.list_plugins())
+pub async fn list_translate_modes() -> Result<Vec<TranslateModeInfo>, String> {
+    Ok(TranslateMode::all()
+        .into_iter()
+        .map(|mode| TranslateModeInfo {
+            key: mode.key().to_string(),
+            name: mode.label_zh().to_string(),
+            description: mode.description_zh().to_string(),
+        })
+        .collect())
 }
 
 #[tauri::command]
-pub async fn get_plugin_configs(state: State<'_, AppState>) -> Result<AllPluginConfigs, String> {
-    Ok(state.plugin_configs.lock().await.clone())
-}
-
-#[tauri::command]
-pub async fn save_plugin_configs(
+pub async fn list_translate_services(
     state: State<'_, AppState>,
-    configs: AllPluginConfigs,
+    mode_key: Option<String>,
+) -> Result<Vec<ServiceInfo>, String> {
+    let factory = state.translate_factory.read().await;
+    if let Some(mode_key) = mode_key {
+        let mode = TranslateMode::from_key(&mode_key)
+            .ok_or_else(|| format!("Unsupported mode: {}", mode_key))?;
+        Ok(factory.services_by_mode(mode))
+    } else {
+        let mut all = Vec::new();
+        for mode in TranslateMode::all() {
+            all.extend(factory.services_by_mode(mode));
+        }
+        Ok(all)
+    }
+}
+
+#[tauri::command]
+pub async fn get_translate_settings(
+    state: State<'_, AppState>,
+) -> Result<TranslationSettings, String> {
+    let mut settings = state.translation_settings.lock().await.clone();
+    let factory = state.translate_factory.read().await;
+    factory.ensure_default_settings(&mut settings);
+    Ok(settings)
+}
+
+#[tauri::command]
+pub async fn save_translate_settings(
+    state: State<'_, AppState>,
+    settings: TranslationSettings,
 ) -> Result<(), String> {
-    let mut guard = state.plugin_configs.lock().await;
-    *guard = configs;
-    tracing::info!("Plugin configs saved, active: {}", guard.active_plugin);
+    let timestamp = Utc::now().to_rfc3339();
+    tracing::info!(
+        "翻译服务选择事件: time={}, mode={}, service={}",
+        timestamp,
+        settings.active_mode.key(),
+        settings.active_service
+    );
+    let mut guard = state.translation_settings.lock().await;
+    *guard = settings;
     Ok(())
 }
 
 #[tauri::command]
-pub async fn health_check_plugin(
+pub async fn debug_select_translate_service(
     state: State<'_, AppState>,
-    namespace: String,
-) -> Result<crate::translate::HealthStatus, String> {
-    let config = {
-        let all_configs = state.plugin_configs.lock().await;
-        all_configs.configs.get(&namespace)
-            .cloned()
-            .unwrap_or_else(|| PluginConfig::new(&namespace))
-    };
-    let registry = state.plugin_registry.read().await;
-    let plugin = registry.get(&namespace).ok_or_else(|| format!("Plugin '{}' not found", namespace))?;
-    Ok(plugin.health_check(&config).await)
+    mode_key: String,
+    service_key: String,
+    settings: TranslationSettings,
+) -> Result<String, String> {
+    let timestamp = Utc::now().to_rfc3339();
+    tracing::info!(
+        "翻译服务选择事件: time={}, mode={}, service={}",
+        timestamp,
+        mode_key,
+        service_key
+    );
+
+    let factory = state.translate_factory.read().await;
+    let service = factory
+        .get(&service_key)
+        .ok_or_else(|| format!("Service not found: {}", service_key))?;
+    tracing::info!("翻译初始化流程: step=lookup, service_name={}", service.descriptor().name);
+
+    let config = settings
+        .service_configs
+        .get(&service_key)
+        .cloned()
+        .unwrap_or_else(|| service.create_default_config());
+
+    tracing::info!("翻译初始化流程: step=validate");
+    if let Err(issues) = service.validate_config(&config) {
+        let message = issues
+            .iter()
+            .map(|issue| format!("{}: {}", issue.field, issue.message))
+            .collect::<Vec<_>>()
+            .join("; ");
+        tracing::error!("翻译初始化异常: step=validate, error={}", message);
+        return Ok(format!("validate_failed: {}", message));
+    }
+
+    tracing::info!("翻译初始化流程: step=initialize");
+    if let Err(err) = service.initialize(&config).await {
+        tracing::error!("翻译初始化异常: step=initialize, error={}", err);
+        return Ok(format!("initialize_failed: {}", err));
+    }
+
+    tracing::info!("翻译初始化流程: step=health_check");
+    let health = service.health_check(&config).await;
+    tracing::info!("翻译初始化流程: step=health_check_done, status={:?}", health);
+
+    Ok("ok".to_string())
+}
+
+#[tauri::command]
+pub async fn health_check_translate_service(
+    state: State<'_, AppState>,
+    service_key: String,
+) -> Result<HealthStatus, String> {
+    let settings = state.translation_settings.lock().await.clone();
+    let factory = state.translate_factory.read().await;
+    let service = factory
+        .get(&service_key)
+        .ok_or_else(|| format!("Service not found: {}", service_key))?;
+    let config = settings
+        .service_configs
+        .get(&service_key)
+        .cloned()
+        .unwrap_or_else(|| service.create_default_config());
+    Ok(service.health_check(&config).await)
 }
 
 #[tauri::command]
@@ -302,12 +463,18 @@ pub async fn get_supported_languages() -> Vec<LanguageInfo> {
 }
 
 #[tauri::command]
-pub async fn get_app_config() -> Result<AppConfig, String> {
-    Ok(AppConfig::default())
+pub async fn get_app_config(state: State<'_, AppState>) -> Result<AppConfig, String> {
+    Ok(state.app_config.lock().await.clone())
 }
 
 #[tauri::command]
-pub async fn save_app_config(config: AppConfig) -> Result<(), String> {
+pub async fn save_app_config(
+    state: State<'_, AppState>,
+    config: AppConfig,
+) -> Result<(), String> {
+    config.save_to_path(&state.config_path)?;
+    let mut guard = state.app_config.lock().await;
+    *guard = config.clone();
     tracing::info!("Saving config: {:?}", config);
     Ok(())
 }

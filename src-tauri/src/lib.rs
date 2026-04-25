@@ -10,6 +10,7 @@ pub mod translate;
 
 use commands::AppState;
 use log_layer::TauriLogLayer;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter, Layer};
@@ -52,8 +53,17 @@ pub fn run() {
                 .expect("Failed to resolve app data dir");
 
             let models_dir = app_data_dir.join("models");
-            let tmp_dir = app_data_dir.join("tmp");
-            let cache_dir = app_data_dir.join("cache");
+            let config_path = app_data_dir.join("app-config.json");
+            let (tmp_dir, cache_dir) = if cfg!(debug_assertions) {
+                let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+                let debug_root = project_root.join(".cache");
+                (debug_root.join("tmp"), debug_root.join("debug"))
+            } else {
+                (app_data_dir.join("tmp"), app_data_dir.join("cache"))
+            };
 
             for dir in [&models_dir, &tmp_dir, &cache_dir] {
                 std::fs::create_dir_all(dir).ok();
@@ -61,8 +71,11 @@ pub fn run() {
 
             tracing::info!("App data dir: {:?}", app_data_dir);
             tracing::info!("Models dir: {:?}", models_dir);
+            tracing::info!("Temp dir: {:?}", tmp_dir);
+            tracing::info!("Cache dir: {:?}", cache_dir);
+            tracing::info!("Config path: {:?}", config_path);
 
-            app.manage(AppState::new(models_dir, tmp_dir, cache_dir));
+            app.manage(AppState::new(models_dir, tmp_dir, cache_dir, config_path));
 
             Ok(())
         })
@@ -72,11 +85,16 @@ pub fn run() {
             commands::list_models,
             commands::download_model,
             commands::open_model_directory,
+            commands::list_embedded_models,
+            commands::download_embedded_model,
+            commands::open_embedded_model_directory,
             commands::check_model_exists,
-            commands::list_translate_plugins,
-            commands::get_plugin_configs,
-            commands::save_plugin_configs,
-            commands::health_check_plugin,
+            commands::list_translate_modes,
+            commands::list_translate_services,
+            commands::get_translate_settings,
+            commands::save_translate_settings,
+            commands::debug_select_translate_service,
+            commands::health_check_translate_service,
             commands::probe_video,
             commands::get_supported_languages,
             commands::get_app_config,

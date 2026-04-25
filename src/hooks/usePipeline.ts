@@ -11,6 +11,7 @@ export interface PipelineConfig {
   asr_model: string;
   translate_engine: string;
   use_gpu: boolean;
+  n_threads: number | null;
   skip_translation: boolean;
 }
 
@@ -22,6 +23,8 @@ export interface PipelineStage {
   translated_count?: number;
   total_count?: number;
   output_path?: string;
+  source_output_path?: string;
+  bilingual_output_path?: string;
   segment_count?: number;
   duration_ms?: number;
   error?: string;
@@ -53,6 +56,8 @@ export function usePipeline() {
         translated_count: payload.translated_count as number | undefined,
         total_count: payload.total_count as number | undefined,
         output_path: payload.output_path as string | undefined,
+        source_output_path: payload.source_output_path as string | undefined,
+        bilingual_output_path: payload.bilingual_output_path as string | undefined,
         segment_count: payload.segment_count as number | undefined,
         duration_ms: payload.duration_ms as number | undefined,
         error: payload.error as string | undefined,

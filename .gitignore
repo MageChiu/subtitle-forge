@@ -49,3 +49,7 @@ src-tauri/gen/schemas/
 
 # Cargo build artifacts
 **/*.rs.bk
+
+src-tauri/.cargo
+src-tauri/Cargo.lock
+.cache

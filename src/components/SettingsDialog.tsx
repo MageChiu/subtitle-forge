@@ -1,12 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { useState, useEffect, useCallback } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import type { AppConfig } from "../types/appConfig";
 import type {
-  PluginInfo,
-  AllPluginConfigs,
   ConfigField,
+  ServiceInfo,
+  TranslateModeInfo,
+  TranslateModeKey,
+  TranslationSettings,
 } from "../types/translation";
-import { CATEGORY_LABELS, CATEGORY_ORDER } from "../types/translation";
 
 interface ModelInfo {
   key: string;
@@ -19,6 +21,24 @@ interface ModelInfo {
 }
 
 interface DownloadProgress {
+  model_key: string;
+  percent: number;
+  downloaded_bytes: number;
+  total_bytes: number;
+}
+
+interface EmbeddedModelInfo {
+  key: string;
+  name: string;
+  size_mb: number;
+  description: string;
+  path: string;
+  downloaded: boolean;
+  download_url: string;
+  model_id: string;
+}
+
+interface EmbeddedDownloadProgress {
   model_key: string;
   percent: number;
   downloaded_bytes: number;
@@ -38,6 +58,13 @@ function formatBytes(bytes: number): string {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
 }
 
+function getSelectOptions(field: ConfigField): Array<{ value: string; label: string }> {
+  if (typeof field.field_type === "object" && "select" in field.field_type) {
+    return field.field_type.select.options;
+  }
+  return [];
+}
+
 function renderConfigField(
   field: ConfigField,
   value: string,
@@ -46,14 +73,30 @@ function renderConfigField(
   const inputClass =
     "w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm";
 
+  if (typeof field.field_type === "object" && "select" in field.field_type) {
+    return (
+      <div key={field.key}>
+        <label className="block text-sm font-medium mb-1">{field.label}</label>
+        <select
+          value={value}
+          onChange={(e) => onChange(field.key, e.target.value)}
+          className={inputClass}
+        >
+          {getSelectOptions(field).map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </div>
+    );
+  }
+
   switch (field.field_type) {
     case "password":
       return (
         <div key={field.key}>
-          <label className="block text-sm font-medium mb-1">
-            {field.label}
-            {field.required && <span className="text-red-500 ml-1">*</span>}
-          </label>
+          <label className="block text-sm font-medium mb-1">{field.label}</label>
           <input
             type="password"
             value={value}
@@ -62,87 +105,16 @@ function renderConfigField(
             className={inputClass}
           />
           {field.description && (
-            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">{field.description}</p>
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{field.description}</p>
           )}
         </div>
       );
     case "url":
+    case "path":
+    case "text":
       return (
         <div key={field.key}>
-          <label className="block text-sm font-medium mb-1">
-            {field.label}
-            {field.required && <span className="text-red-500 ml-1">*</span>}
-          </label>
-          <input
-            type="url"
-            value={value}
-            onChange={(e) => onChange(field.key, e.target.value)}
-            placeholder={field.placeholder}
-            className={inputClass}
-          />
-          {field.description && (
-            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">{field.description}</p>
-          )}
-        </div>
-      );
-    case "number":
-      return (
-        <div key={field.key}>
-          <label className="block text-sm font-medium mb-1">
-            {field.label}
-            {field.required && <span className="text-red-500 ml-1">*</span>}
-          </label>
-          <input
-            type="number"
-            value={value}
-            onChange={(e) => onChange(field.key, e.target.value)}
-            placeholder={field.placeholder}
-            className={inputClass}
-          />
-          {field.description && (
-            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">{field.description}</p>
-          )}
-        </div>
-      );
-    case "select":
-      return (
-        <div key={field.key}>
-          <label className="block text-sm font-medium mb-1">
-            {field.label}
-            {field.required && <span className="text-red-500 ml-1">*</span>}
-          </label>
-          <select
-            value={value}
-            onChange={(e) => onChange(field.key, e.target.value)}
-            className={inputClass}
-          >
-            {field.options?.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-        </div>
-      );
-    case "toggle":
-      return (
-        <div key={field.key} className="flex items-center gap-2">
-          <input
-            type="checkbox"
-            checked={value === "true"}
-            onChange={(e) => onChange(field.key, e.target.checked ? "true" : "false")}
-            className="rounded"
-          />
-          <label className="text-sm font-medium">{field.label}</label>
-        </div>
-      );
-    default:
-      return (
-        <div key={field.key}>
-          <label className="block text-sm font-medium mb-1">
-            {field.label}
-            {field.required && <span className="text-red-500 ml-1">*</span>}
-          </label>
+          <label className="block text-sm font-medium mb-1">{field.label}</label>
           <input
             type="text"
             value={value}
@@ -151,64 +123,260 @@ function renderConfigField(
             className={inputClass}
           />
           {field.description && (
-            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">{field.description}</p>
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{field.description}</p>
           )}
         </div>
       );
+    case "number":
+      return (
+        <div key={field.key}>
+          <label className="block text-sm font-medium mb-1">{field.label}</label>
+          <input
+            type="number"
+            value={value}
+            onChange={(e) => onChange(field.key, e.target.value)}
+            placeholder={field.placeholder}
+            className={inputClass}
+          />
+          {field.description && (
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{field.description}</p>
+          )}
+        </div>
+      );
+    case "toggle":
+      return (
+        <label key={field.key} className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={value === "true"}
+            onChange={(e) => onChange(field.key, e.target.checked ? "true" : "false")}
+          />
+          <span>{field.label}</span>
+        </label>
+      );
+    default:
+      return null;
   }
 }
 
 export function SettingsDialog({ onClose, onModelChange }: SettingsDialogProps) {
   const [models, setModels] = useState<ModelInfo[]>([]);
+  const [embeddedModels, setEmbeddedModels] = useState<EmbeddedModelInfo[]>([]);
+  const [selectedWhisperModelKey, setSelectedWhisperModelKey] = useState<string>("");
+  const [selectedEmbeddedModelKey, setSelectedEmbeddedModelKey] = useState<string>("");
   const [downloading, setDownloading] = useState<string | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<DownloadProgress | null>(null);
+  const [embeddedDownloading, setEmbeddedDownloading] = useState<string | null>(null);
+  const [embeddedDownloadProgress, setEmbeddedDownloadProgress] =
+    useState<EmbeddedDownloadProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [showPluginConfig, setShowPluginConfig] = useState(false);
 
-  const [plugins, setPlugins] = useState<PluginInfo[]>([]);
-  const [allConfigs, setAllConfigs] = useState<AllPluginConfigs | null>(null);
-  const [healthStatus, setHealthStatus] = useState<Record<string, string>>({});
+  const [modes, setModes] = useState<TranslateModeInfo[]>([]);
+  const [services, setServices] = useState<ServiceInfo[]>([]);
+  const [settings, setSettings] = useState<TranslationSettings | null>(null);
+  const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
+  const [healthStatus, setHealthStatus] = useState<string | null>(null);
 
   const loadModels = useCallback(async () => {
-    try {
-      const list = await invoke<ModelInfo[]>("list_models");
-      setModels(list);
-    } catch (err) {
-      console.error("Failed to load models:", err);
-    }
+    const list = await invoke<ModelInfo[]>("list_models");
+    setModels(list);
   }, []);
 
-  const loadPlugins = useCallback(async () => {
-    try {
-      const [pluginList, configs] = await Promise.all([
-        invoke<PluginInfo[]>("list_translate_plugins"),
-        invoke<AllPluginConfigs>("get_plugin_configs"),
-      ]);
-      setPlugins(pluginList);
-      setAllConfigs(configs);
-    } catch (err) {
-      console.error("Failed to load plugins:", err);
-    }
+  const loadEmbeddedModels = useCallback(async () => {
+    const list = await invoke<EmbeddedModelInfo[]>("list_embedded_models");
+    setEmbeddedModels(list);
+  }, []);
+
+  const loadTranslateSettings = useCallback(async () => {
+    const [modeList, serviceList, saved, savedAppConfig] = await Promise.all([
+      invoke<TranslateModeInfo[]>("list_translate_modes"),
+      invoke<ServiceInfo[]>("list_translate_services"),
+      invoke<TranslationSettings>("get_translate_settings"),
+      invoke<AppConfig>("get_app_config"),
+    ]);
+    setModes(modeList);
+    setServices(serviceList);
+    setSettings(saved);
+    setAppConfig(savedAppConfig);
   }, []);
 
   useEffect(() => {
-    loadModels();
-    loadPlugins();
+    loadModels().catch((err) => console.error("Failed to load models:", err));
+    loadEmbeddedModels().catch((err) =>
+      console.error("Failed to load embedded models:", err),
+    );
+    loadTranslateSettings().catch((err) =>
+      console.error("Failed to load translate settings:", err),
+    );
 
     const unlisten = listen<DownloadProgress>("model-download-progress", (event) => {
       setDownloadProgress(event.payload);
     });
+    const unlistenEmbedded = listen<EmbeddedDownloadProgress>(
+      "embedded-model-download-progress",
+      (event) => {
+        setEmbeddedDownloadProgress(event.payload);
+      },
+    );
 
     return () => {
       unlisten.then((fn) => fn());
+      unlistenEmbedded.then((fn) => fn());
     };
-  }, [loadModels, loadPlugins]);
+  }, [loadModels, loadEmbeddedModels, loadTranslateSettings]);
+
+  useEffect(() => {
+    if (!selectedWhisperModelKey && models.length > 0) {
+      setSelectedWhisperModelKey(models.find((model) => model.downloaded)?.key ?? models[0].key);
+    }
+  }, [models, selectedWhisperModelKey]);
+
+  const activeMode = settings?.active_mode ?? "online_translate";
+  const filteredServices = useMemo(
+    () => services.filter((service) => service.descriptor.mode === activeMode),
+    [services, activeMode],
+  );
+  const activeServiceInfo = filteredServices.find(
+    (service) => service.descriptor.key === settings?.active_service,
+  );
+  const activeConfig = settings?.service_configs[settings.active_service];
+  const selectedWhisperModel =
+    models.find((model) => model.key === selectedWhisperModelKey) ?? models[0] ?? null;
+  const selectedEmbeddedModel =
+    embeddedModels.find((model) => model.key === selectedEmbeddedModelKey) ?? embeddedModels[0] ?? null;
+
+  useEffect(() => {
+    const currentEmbeddedKey = settings?.service_configs.llama_cpp?.fields.model_key;
+    if (currentEmbeddedKey) {
+      setSelectedEmbeddedModelKey(currentEmbeddedKey);
+      return;
+    }
+    if (!selectedEmbeddedModelKey && embeddedModels.length > 0) {
+      setSelectedEmbeddedModelKey(
+        embeddedModels.find((model) => model.downloaded)?.key ?? embeddedModels[0].key,
+      );
+    }
+  }, [settings, embeddedModels, selectedEmbeddedModelKey]);
+
+  const debugSelection = useCallback(
+    async (nextSettings: TranslationSettings, modeKey: TranslateModeKey, serviceKey: string) => {
+      try {
+        await invoke("debug_select_translate_service", {
+          modeKey,
+          serviceKey,
+          settings: nextSettings,
+        });
+      } catch (err) {
+        console.error("Failed to debug selection:", err);
+      }
+    },
+    [],
+  );
+
+  const handleModeChange = async (modeKey: TranslateModeKey) => {
+    if (!settings) return;
+    const nextService =
+      services.find((service) => service.descriptor.mode === modeKey)?.descriptor.key ?? "";
+    const nextSettings: TranslationSettings = {
+      ...settings,
+      active_mode: modeKey,
+      active_service: nextService,
+    };
+    setSettings(nextSettings);
+    setHealthStatus(null);
+    await debugSelection(nextSettings, modeKey, nextService);
+  };
+
+  const handleServiceChange = async (serviceKey: string) => {
+    if (!settings) return;
+    const nextSettings: TranslationSettings = {
+      ...settings,
+      active_service: serviceKey,
+    };
+    setSettings(nextSettings);
+    setHealthStatus(null);
+    await debugSelection(nextSettings, nextSettings.active_mode, serviceKey);
+  };
+
+  const handleConfigChange = (key: string, value: string) => {
+    if (!settings || !activeServiceInfo) return;
+    setSettings({
+      ...settings,
+      service_configs: {
+        ...settings.service_configs,
+        [activeServiceInfo.descriptor.key]: {
+          service_key: activeServiceInfo.descriptor.key,
+          fields: {
+            ...settings.service_configs[activeServiceInfo.descriptor.key]?.fields,
+            [key]: value,
+          },
+        },
+      },
+    });
+  };
+
+  const handleEmbeddedModelSelect = (modelKey: string) => {
+    setSelectedEmbeddedModelKey(modelKey);
+    if (!settings) return;
+    setSettings({
+      ...settings,
+      active_mode: "embedded_llm",
+      active_service: "llama_cpp",
+      service_configs: {
+        ...settings.service_configs,
+        llama_cpp: {
+          service_key: "llama_cpp",
+          fields: {
+            ...settings.service_configs.llama_cpp?.fields,
+            model_key: modelKey,
+          },
+        },
+      },
+    });
+  };
+
+  const handleSave = async () => {
+    if (!settings || !appConfig) return;
+    await invoke("save_translate_settings", { settings });
+    await invoke("save_app_config", { config: appConfig });
+    onModelChange?.();
+  };
+
+  const updateGpuSetting = (useGpu: boolean) => {
+    if (!appConfig) return;
+    setAppConfig({
+      ...appConfig,
+      general: {
+        ...appConfig.general,
+        use_gpu: useGpu,
+      },
+    });
+  };
+
+  const updateThreadSetting = (value: string) => {
+    if (!appConfig) return;
+    const parsed = Number.parseInt(value, 10);
+    setAppConfig({
+      ...appConfig,
+      asr: {
+        ...appConfig.asr,
+        n_threads: Number.isFinite(parsed) && parsed >= 0 ? parsed : 0,
+      },
+    });
+  };
+
+  const handleHealthCheck = async () => {
+    if (!settings) return;
+    const status = await invoke("health_check_translate_service", {
+      serviceKey: settings.active_service,
+    });
+    setHealthStatus(JSON.stringify(status));
+  };
 
   const handleDownload = async (modelKey: string) => {
     setDownloading(modelKey);
     setError(null);
     setDownloadProgress(null);
-
     try {
       await invoke<string>("download_model", { modelKey });
       await loadModels();
@@ -221,6 +389,22 @@ export function SettingsDialog({ onClose, onModelChange }: SettingsDialogProps) 
     }
   };
 
+  const handleEmbeddedDownload = async (modelKey: string) => {
+    setEmbeddedDownloading(modelKey);
+    setError(null);
+    setEmbeddedDownloadProgress(null);
+    try {
+      await invoke<string>("download_embedded_model", { modelKey });
+      await loadEmbeddedModels();
+      onModelChange?.();
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setEmbeddedDownloading(null);
+      setEmbeddedDownloadProgress(null);
+    }
+  };
+
   const handleOpenDirectory = async () => {
     try {
       await invoke("open_model_directory");
@@ -229,267 +413,345 @@ export function SettingsDialog({ onClose, onModelChange }: SettingsDialogProps) 
     }
   };
 
-  const handleSelectPlugin = (namespace: string) => {
-    if (!allConfigs) return;
-    setAllConfigs({ ...allConfigs, active_plugin: namespace });
-  };
-
-  const handleConfigChange = (namespace: string, key: string, value: string) => {
-    if (!allConfigs) return;
-    const config = allConfigs.configs[namespace];
-    if (!config) return;
-    setAllConfigs({
-      ...allConfigs,
-      configs: {
-        ...allConfigs.configs,
-        [namespace]: {
-          ...config,
-          fields: { ...config.fields, [key]: value },
-        },
-      },
-    });
-  };
-
-  const handleSave = async () => {
-    if (!allConfigs) return;
+  const handleOpenEmbeddedDirectory = async () => {
     try {
-      await invoke("save_plugin_configs", { configs: allConfigs });
+      await invoke("open_embedded_model_directory");
     } catch (err) {
-      console.error("Failed to save plugin configs:", err);
+      console.error("Failed to open embedded model directory:", err);
     }
-  };
-
-  const handleHealthCheck = async (namespace: string) => {
-    try {
-      const status = await invoke<string>("health_check_plugin", { namespace });
-      setHealthStatus((prev) => ({ ...prev, [namespace]: status }));
-    } catch (err) {
-      setHealthStatus((prev) => ({ ...prev, [namespace]: `Error: ${err}` }));
-    }
-  };
-
-  const activePlugin = allConfigs?.active_plugin ?? "google/v1";
-  const activePluginInfo = plugins.find((p) => p.metadata.namespace === activePlugin);
-  const activeConfig = allConfigs?.configs[activePlugin];
-  const activeCategory = activePluginInfo?.metadata.category ?? CATEGORY_ORDER[0];
-  const activeCategoryPlugins = plugins.filter((p) => p.metadata.category === activeCategory);
-
-  const handleSelectCategory = (category: string) => {
-    if (!allConfigs) return;
-    const nextPlugin = plugins.find((p) => p.metadata.category === category);
-    if (!nextPlugin) return;
-    setAllConfigs({ ...allConfigs, active_plugin: nextPlugin.metadata.namespace });
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-white dark:bg-gray-800 rounded-2xl p-6 w-full max-w-lg max-h-[85vh] overflow-y-auto shadow-xl">
-        <div className="flex items-center justify-between mb-6">
-          <h2 className="text-xl font-bold">Settings</h2>
-          <button
-            onClick={onClose}
-            className="text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 text-xl"
-          >
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+      <div className="max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white p-6 shadow-xl dark:bg-gray-800">
+        <div className="mb-6 flex items-center justify-between">
+          <h2 className="text-xl font-bold">设置</h2>
+          <button onClick={onClose} className="text-xl text-gray-500">
             ✕
           </button>
         </div>
 
         <section className="mb-6">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="font-medium text-sm text-gray-500 uppercase tracking-wider">
-              Whisper Models
+          <h3 className="mb-3 text-sm font-medium uppercase tracking-wider text-gray-500">
+            ASR 性能
+          </h3>
+
+          <div className="rounded-lg border border-gray-200 p-4 dark:border-gray-700">
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={appConfig?.general.use_gpu ?? false}
+                onChange={(e) => updateGpuSetting(e.target.checked)}
+              />
+              <span>启用 GPU 加速</span>
+            </label>
+            <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+              仅在当前构建已启用 `metal`、`coreml`、`cuda` 等 Whisper 后端时生效。
+            </p>
+
+            <div className="mt-4">
+              <label className="mb-1 block text-sm font-medium">ASR 线程数</label>
+              <input
+                type="number"
+                min={0}
+                step={1}
+                value={appConfig?.asr.n_threads ?? 0}
+                onChange={(e) => updateThreadSetting(e.target.value)}
+                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-800"
+              />
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                `0` 表示自动选择推荐线程数，通常会比直接使用全部逻辑核心更快。
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <section className="mb-6">
+          <div className="mb-3 flex items-center justify-between">
+            <h3 className="text-sm font-medium uppercase tracking-wider text-gray-500">
+              Whisper 模型库
             </h3>
             <button
               onClick={handleOpenDirectory}
-              className="text-xs text-blue-500 hover:text-blue-400 underline"
+              className="text-xs text-blue-500 hover:text-blue-400"
             >
-              Open Models Folder
+              打开模型目录
             </button>
           </div>
 
-          <div className="space-y-2">
-            {models.map((model) => (
-              <div
-                key={model.key}
-                className={`flex items-center justify-between p-3 rounded-lg border ${
-                  model.downloaded
-                    ? "border-green-500/30 bg-green-500/5"
-                    : "border-gray-300 dark:border-gray-600"
-                }`}
-              >
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="font-medium text-sm">{model.name}</span>
-                    {model.downloaded ? (
-                      <span className="text-[10px] px-1.5 py-0.5 bg-green-500/20 text-green-600 dark:text-green-400 rounded-full font-medium">
-                        Downloaded
-                      </span>
-                    ) : null}
-                  </div>
-                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-                    {model.description}
-                  </p>
-                  {downloading === model.key && downloadProgress && (
-                    <div className="mt-2">
-                      <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
-                        <span>
-                          {formatBytes(downloadProgress.downloaded_bytes)} /{" "}
-                          {formatBytes(downloadProgress.total_bytes)}
-                        </span>
-                        <span>{downloadProgress.percent.toFixed(1)}%</span>
-                      </div>
-                      <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-1.5">
-                        <div
-                          className="bg-blue-500 h-1.5 rounded-full transition-all duration-300"
-                          style={{ width: `${downloadProgress.percent}%` }}
-                        />
-                      </div>
-                    </div>
-                  )}
-                </div>
-                <div className="ml-3 shrink-0">
-                  {model.downloaded ? (
-                    <span className="text-green-500 text-lg">✓</span>
-                  ) : (
-                    <button
-                      onClick={() => handleDownload(model.key)}
-                      disabled={downloading !== null}
-                      className="px-3 py-1.5 text-xs font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                    >
-                      {downloading === model.key ? "Downloading..." : "Download"}
-                    </button>
-                  )}
-                </div>
+          <div className="rounded-lg border border-gray-200 p-4 dark:border-gray-700">
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_auto_auto] md:items-end">
+              <div>
+                <label className="mb-1 block text-sm font-medium">Whisper 模型</label>
+                <select
+                  value={selectedWhisperModelKey}
+                  onChange={(e) => setSelectedWhisperModelKey(e.target.value)}
+                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-800"
+                >
+                  {models.map((model) => (
+                    <option key={model.key} value={model.key}>
+                      {model.name} {model.downloaded ? "✓" : "(未下载)"}
+                    </option>
+                  ))}
+                </select>
               </div>
-            ))}
+              <button
+                onClick={() => selectedWhisperModel && handleDownload(selectedWhisperModel.key)}
+                disabled={
+                  !selectedWhisperModel ||
+                  selectedWhisperModel.downloaded ||
+                  downloading !== null ||
+                  embeddedDownloading !== null
+                }
+                className="rounded-lg bg-blue-600 px-3 py-2 text-xs font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {selectedWhisperModel && downloading === selectedWhisperModel.key ? "下载中..." : "下载"}
+              </button>
+              <button
+                onClick={handleOpenDirectory}
+                className="rounded-lg border border-gray-300 px-3 py-2 text-xs hover:bg-gray-100 dark:border-gray-600 dark:hover:bg-gray-700"
+              >
+                打开目录
+              </button>
+            </div>
+
+            {selectedWhisperModel && (
+              <div className="mt-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-sm font-medium">{selectedWhisperModel.name}</span>
+                  <span
+                    className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
+                      selectedWhisperModel.downloaded
+                        ? "bg-green-500/15 text-green-600 dark:text-green-400"
+                        : "bg-amber-500/15 text-amber-600 dark:text-amber-400"
+                    }`}
+                  >
+                    {selectedWhisperModel.downloaded ? "已下载" : "未下载"}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  {selectedWhisperModel.description}
+                </p>
+                {downloading === selectedWhisperModel.key && downloadProgress && (
+                  <div className="mt-2">
+                    <div className="mb-1 flex items-center justify-between text-xs text-gray-500">
+                      <span>
+                        {formatBytes(downloadProgress.downloaded_bytes)} /{" "}
+                        {formatBytes(downloadProgress.total_bytes)}
+                      </span>
+                      <span>{downloadProgress.percent.toFixed(1)}%</span>
+                    </div>
+                    <div className="h-1.5 w-full rounded-full bg-gray-200 dark:bg-gray-700">
+                      <div
+                        className="h-1.5 rounded-full bg-blue-500 transition-all duration-300"
+                        style={{ width: `${downloadProgress.percent}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {error && (
-            <div className="mt-3 p-2 bg-red-500/10 border border-red-500/30 rounded-lg text-xs text-red-500">
+            <div className="mt-3 rounded-lg border border-red-500/30 bg-red-500/10 p-2 text-xs text-red-500">
               {error}
             </div>
           )}
         </section>
 
         <section className="mb-6">
-          <h3 className="font-medium mb-3 text-sm text-gray-500 uppercase tracking-wider">
-            Translation Plugin
-          </h3>
+          <div className="mb-3 flex items-center justify-between">
+            <h3 className="text-sm font-medium uppercase tracking-wider text-gray-500">
+              内嵌 LLM 模型库
+            </h3>
+            <button
+              onClick={handleOpenEmbeddedDirectory}
+              className="text-xs text-blue-500 hover:text-blue-400"
+            >
+              打开模型目录
+            </button>
+          </div>
 
-          <div className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div className="rounded-lg border border-gray-200 p-4 dark:border-gray-700">
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_auto_auto] md:items-end">
               <div>
-                <label className="block text-sm font-medium mb-1">Plugin Type</label>
+                <label className="mb-1 block text-sm font-medium">内嵌 LLM 模型</label>
                 <select
-                  value={activeCategory}
-                  onChange={(e) => handleSelectCategory(e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm"
+                  value={selectedEmbeddedModelKey}
+                  onChange={(e) => handleEmbeddedModelSelect(e.target.value)}
+                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-800"
                 >
-                  {CATEGORY_ORDER.map((category) => (
-                    <option key={category} value={category}>
-                      {CATEGORY_LABELS[category]}
+                  {embeddedModels.map((model) => (
+                    <option key={model.key} value={model.key}>
+                      {model.name} {model.downloaded ? "✓" : "(未下载)"}
                     </option>
                   ))}
                 </select>
               </div>
-              <div>
-                <label className="block text-sm font-medium mb-1">Plugin</label>
-                <select
-                  value={activePlugin}
-                  onChange={(e) => handleSelectPlugin(e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm"
-                >
-                  {activeCategoryPlugins.map((plugin) => (
-                    <option key={plugin.metadata.namespace} value={plugin.metadata.namespace}>
-                      {plugin.metadata.display_name}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              <button
+                onClick={() => selectedEmbeddedModel && handleEmbeddedDownload(selectedEmbeddedModel.key)}
+                disabled={
+                  !selectedEmbeddedModel ||
+                  selectedEmbeddedModel.downloaded ||
+                  embeddedDownloading !== null ||
+                  downloading !== null
+                }
+                className="rounded-lg bg-blue-600 px-3 py-2 text-xs font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {selectedEmbeddedModel && embeddedDownloading === selectedEmbeddedModel.key
+                  ? "下载中..."
+                  : "下载"}
+              </button>
+              <button
+                onClick={handleOpenEmbeddedDirectory}
+                className="rounded-lg border border-gray-300 px-3 py-2 text-xs hover:bg-gray-100 dark:border-gray-600 dark:hover:bg-gray-700"
+              >
+                打开目录
+              </button>
             </div>
 
-            {activePluginInfo && (
-              <div className="p-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50/60 dark:bg-gray-900/30">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-medium text-sm">{activePluginInfo.metadata.display_name}</span>
-                      <span className="text-[10px] px-1.5 py-0.5 bg-gray-200 dark:bg-gray-700 rounded-full text-gray-500">
-                        v{activePluginInfo.metadata.version}
+            {selectedEmbeddedModel && (
+              <div className="mt-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-sm font-medium">{selectedEmbeddedModel.name}</span>
+                  <span
+                    className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
+                      settings?.active_service === "llama_cpp" &&
+                      settings?.service_configs.llama_cpp?.fields.model_key === selectedEmbeddedModel.key
+                        ? "bg-blue-500/15 text-blue-600 dark:text-blue-400"
+                        : selectedEmbeddedModel.downloaded
+                          ? "bg-green-500/15 text-green-600 dark:text-green-400"
+                          : "bg-amber-500/15 text-amber-600 dark:text-amber-400"
+                    }`}
+                  >
+                    {settings?.active_service === "llama_cpp" &&
+                    settings?.service_configs.llama_cpp?.fields.model_key === selectedEmbeddedModel.key
+                      ? "当前使用"
+                      : selectedEmbeddedModel.downloaded
+                        ? "已下载"
+                        : "未下载"}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  {selectedEmbeddedModel.description}
+                </p>
+                {embeddedDownloading === selectedEmbeddedModel.key && embeddedDownloadProgress && (
+                  <div className="mt-2">
+                    <div className="mb-1 flex items-center justify-between text-xs text-gray-500">
+                      <span>
+                        {formatBytes(embeddedDownloadProgress.downloaded_bytes)} /{" "}
+                        {formatBytes(embeddedDownloadProgress.total_bytes)}
                       </span>
-                      <span className="text-[10px] px-1.5 py-0.5 bg-blue-500/10 text-blue-600 dark:text-blue-400 rounded-full">
-                        {CATEGORY_LABELS[activePluginInfo.metadata.category]}
-                      </span>
+                      <span>{embeddedDownloadProgress.percent.toFixed(1)}%</span>
                     </div>
-                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                      {activePluginInfo.metadata.description}
-                    </p>
-                    {healthStatus[activePlugin] && (
-                      <p className="text-xs text-gray-400 mt-1">
-                        Status: {healthStatus[activePlugin]}
-                      </p>
-                    )}
+                    <div className="h-1.5 w-full rounded-full bg-gray-200 dark:bg-gray-700">
+                      <div
+                        className="h-1.5 rounded-full bg-blue-500 transition-all duration-300"
+                        style={{ width: `${embeddedDownloadProgress.percent}%` }}
+                      />
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <button
-                      onClick={() => handleHealthCheck(activePlugin)}
-                      className="px-2.5 py-1.5 text-xs rounded-lg border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700"
-                    >
-                      Health Check
-                    </button>
-                    <button
-                      onClick={() => setShowPluginConfig((v) => !v)}
-                      className="px-2.5 py-1.5 text-xs rounded-lg border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700"
-                    >
-                      {showPluginConfig ? "Hide Config" : "Show Config"}
-                    </button>
-                  </div>
-                </div>
+                )}
               </div>
             )}
-
-            {activePluginInfo && activeConfig && (
-              <div
-                className={`border border-gray-200 dark:border-gray-700 rounded-lg ${
-                  showPluginConfig ? "p-4" : "hidden"
-                }`}
-              >
-                <h4 className="text-sm font-medium mb-3">
-                  {activePluginInfo.metadata.display_name} Configuration
-                </h4>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {activePluginInfo.metadata.config_schema.length === 0 ? (
-                    <p className="text-xs text-gray-500 dark:text-gray-400 md:col-span-2">
-                      No configuration required for this plugin.
-                    </p>
-                  ) : (
-                    activePluginInfo.metadata.config_schema.map((field) =>
-                      renderConfigField(
-                        field,
-                        activeConfig.fields[field.key] ?? field.default,
-                        (key, value) => handleConfigChange(activePlugin, key, value),
-                      ),
-                    )
-                  )}
-                </div>
-              </div>
-            )}
-
-            <button
-              onClick={handleSave}
-              className="w-full px-4 py-2 text-sm font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-            >
-              Save Settings
-            </button>
           </div>
         </section>
 
-        <div className="flex gap-3 justify-end">
+        <section className="mb-6">
+          <h3 className="mb-3 text-sm font-medium uppercase tracking-wider text-gray-500">
+            翻译设置
+          </h3>
+
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-sm font-medium">翻译模式</label>
+              <select
+                value={activeMode}
+                onChange={(e) => void handleModeChange(e.target.value as TranslateModeKey)}
+                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-800"
+              >
+                {modes.map((mode) => (
+                  <option key={mode.key} value={mode.key}>
+                    {mode.name}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                {modes.find((mode) => mode.key === activeMode)?.description}
+              </p>
+            </div>
+
+            <div>
+              <label className="mb-1 block text-sm font-medium">翻译服务</label>
+              <select
+                value={settings?.active_service ?? ""}
+                onChange={(e) => void handleServiceChange(e.target.value)}
+                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-800"
+              >
+                {filteredServices.map((service) => (
+                  <option key={service.descriptor.key} value={service.descriptor.key}>
+                    {service.descriptor.name}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                {activeServiceInfo?.descriptor.description}
+              </p>
+            </div>
+          </div>
+
+          {activeServiceInfo && activeConfig && (
+            <div className="mt-4 rounded-lg border border-gray-200 p-4 dark:border-gray-700">
+              <div className="mb-3 flex items-center justify-between">
+                <div>
+                  <h4 className="text-sm font-medium">{activeServiceInfo.descriptor.name}</h4>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    当前服务配置项
+                  </p>
+                </div>
+                <button
+                  onClick={() => void handleHealthCheck()}
+                  className="rounded-lg border border-gray-300 px-2.5 py-1.5 text-xs hover:bg-gray-100 dark:border-gray-600 dark:hover:bg-gray-700"
+                >
+                  健康检查
+                </button>
+              </div>
+
+              {healthStatus && (
+                <div className="mb-3 rounded-lg bg-gray-100 px-3 py-2 text-xs text-gray-600 dark:bg-gray-900 dark:text-gray-300">
+                  {healthStatus}
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                {activeServiceInfo.descriptor.config_schema
+                  .filter((field) => !(activeServiceInfo.descriptor.key === "llama_cpp" && field.key === "model_key"))
+                  .map((field) =>
+                  renderConfigField(
+                    field,
+                    activeConfig.fields[field.key] ?? field.default,
+                    handleConfigChange,
+                  ),
+                )}
+              </div>
+            </div>
+          )}
+
+          <button
+            onClick={() => void handleSave()}
+            className="mt-4 w-full rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+          >
+            保存设置
+          </button>
+        </section>
+
+        <div className="flex justify-end gap-3">
           <button
             onClick={onClose}
-            className="px-4 py-2 text-sm rounded-lg border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700"
+            className="rounded-lg border border-gray-300 px-4 py-2 text-sm hover:bg-gray-100 dark:border-gray-600 dark:hover:bg-gray-700"
           >
-            Close
+            关闭
           </button>
         </div>
       </div>

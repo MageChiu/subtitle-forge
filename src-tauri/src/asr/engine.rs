@@ -4,8 +4,10 @@
 
 use async_trait::async_trait;
 use crate::error::AsrError;
+use crate::config::settings::recommended_asr_threads;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::sync::{atomic::AtomicBool, Arc};
 use tokio::sync::mpsc;
 
 /// A single recognized segment with timestamps
@@ -42,6 +44,26 @@ pub struct AsrConfig {
     pub temperature: f32,
     /// Maximum segment length in characters (for splitting long segments)
     pub max_segment_length: Option<usize>,
+    /// Enable VAD-based chunk planning
+    pub enable_vad: bool,
+    /// VAD minimum detected speech length
+    pub vad_min_speech_ms: u32,
+    /// VAD minimum silence gap used to split speech
+    pub vad_min_silence_ms: u32,
+    /// VAD hangover to avoid clipping speech endings
+    pub vad_hangover_ms: u32,
+    /// Merge adjacent speech regions when the gap is below this threshold
+    pub vad_max_merge_gap_ms: u32,
+    /// Minimum planned chunk length
+    pub vad_min_chunk_ms: u32,
+    /// Maximum planned chunk length
+    pub vad_max_chunk_ms: u32,
+    /// Overlap between neighbouring chunks
+    pub vad_overlap_ms: u32,
+    /// Speech threshold probability for VAD
+    pub vad_threshold_probability: f32,
+    /// Optional directory for dumping intermediate debug artifacts
+    pub debug_output_dir: Option<std::path::PathBuf>,
 }
 
 impl Default for AsrConfig {
@@ -50,10 +72,20 @@ impl Default for AsrConfig {
             model_path: std::path::PathBuf::new(),
             language: None,
             translate_to_english: false,
-            n_threads: num_cpus::get() as u32,
+            n_threads: recommended_asr_threads(),
             use_gpu: false,
             temperature: 0.0,
             max_segment_length: None,
+            enable_vad: true,
+            vad_min_speech_ms: 120,
+            vad_min_silence_ms: 300,
+            vad_hangover_ms: 120,
+            vad_max_merge_gap_ms: 500,
+            vad_min_chunk_ms: 15_000,
+            vad_max_chunk_ms: 180_000,
+            vad_overlap_ms: 2_000,
+            vad_threshold_probability: 0.70,
+            debug_output_dir: None,
         }
     }
 }
@@ -81,6 +113,7 @@ pub trait AsrEngine: Send + Sync {
         audio_path: &Path,
         config: &AsrConfig,
         progress_tx: mpsc::Sender<AsrProgress>,
+        cancel_flag: Arc<AtomicBool>,
     ) -> Result<Vec<Segment>, AsrError>;
 
     /// Get list of supported languages

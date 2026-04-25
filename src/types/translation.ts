@@ -1,51 +1,76 @@
-export interface ConfigField {
-  key: string;
-  label: string;
-  field_type: "text" | "password" | "url" | "number" | "select" | "toggle";
-  default: string;
-  required: boolean;
-  placeholder?: string;
-  description?: string;
-  options?: SelectOption[];
+export type TranslateModeKey =
+  | "online_translate"
+  | "online_llm"
+  | "local_llm"
+  | "embedded_llm";
+
+export interface TranslateModeInfo {
+  key: TranslateModeKey;
+  name: string;
+  description: string;
 }
+
+export type ConfigFieldType =
+  | "text"
+  | "password"
+  | "url"
+  | "number"
+  | "path"
+  | "toggle"
+  | { select: { options: SelectOption[] } };
 
 export interface SelectOption {
   value: string;
   label: string;
 }
 
-export interface PluginMetadata {
-  namespace: string;
-  display_name: string;
+export interface ConfigField {
+  key: string;
+  label: string;
+  field_type:
+    | "text"
+    | "password"
+    | "url"
+    | "number"
+    | "path"
+    | "toggle"
+    | { select: { options: SelectOption[] } };
+  default: string;
+  required: boolean;
+  placeholder?: string;
+  description?: string;
+}
+
+export interface ServiceDescriptor {
+  key: string;
+  name: string;
   description: string;
-  version: string;
-  category: "remote_api" | "remote_llm" | "local_llm";
+  mode: TranslateModeKey;
   requires_network: boolean;
   config_schema: ConfigField[];
 }
 
-export type HealthStatus = "healthy" | { degraded: string } | { unhealthy: string } | "unknown";
+export type HealthStatus = "healthy" | "unknown" | { degraded: string } | { unhealthy: string };
 
-export interface PluginInfo {
-  metadata: PluginMetadata;
-  is_available: boolean;
+export interface ServiceInfo {
+  descriptor: ServiceDescriptor;
   health_status: HealthStatus | null;
 }
 
-export interface PluginConfig {
-  namespace: string;
+export interface ServiceConfig {
+  service_key: string;
   fields: Record<string, string>;
 }
 
-export interface AllPluginConfigs {
-  active_plugin: string;
-  configs: Record<string, PluginConfig>;
+export interface TranslationSettings {
+  active_mode: TranslateModeKey;
+  active_service: string;
+  service_configs: Record<string, ServiceConfig>;
 }
 
-export const CATEGORY_LABELS: Record<string, string> = {
-  remote_api: "Online Translation Services",
-  remote_llm: "Remote LLM Services",
-  local_llm: "Local LLM Services",
+export const MODE_LABELS: Record<TranslateModeKey, string> = {
+  online_translate: "在线翻译服务",
+  online_llm: "在线LLM服务",
+  local_llm: "本地LLM服务",
+  embedded_llm: "内嵌LLM服务",
 };
-
-export const CATEGORY_ORDER = ["remote_api", "remote_llm", "local_llm"];

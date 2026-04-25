@@ -3,6 +3,7 @@
 // ============================================================
 
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 /// Application configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -26,6 +27,43 @@ impl Default for AppConfig {
             subtitle: SubtitleSettings::default(),
         }
     }
+}
+
+impl AppConfig {
+    pub fn load_or_default(path: &Path) -> Self {
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn save_to_path(&self, path: &Path) -> Result<(), String> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create config directory: {}", e))?;
+        }
+
+        let payload = serde_json::to_vec_pretty(self)
+            .map_err(|e| format!("Failed to serialize config: {}", e))?;
+        std::fs::write(path, payload).map_err(|e| format!("Failed to write config: {}", e))
+    }
+
+    pub fn resolved_asr_threads(&self) -> u32 {
+        let configured = self.asr.n_threads;
+        if configured > 0 {
+            configured
+        } else {
+            recommended_asr_threads()
+        }
+    }
+}
+
+pub fn recommended_asr_threads() -> u32 {
+    let physical = num_cpus::get_physical();
+    let logical = num_cpus::get();
+
+    let preferred = if physical > 0 { physical } else { logical };
+    preferred.clamp(1, 8) as u32
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
