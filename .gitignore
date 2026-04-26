@@ -43,6 +43,7 @@ pnpm-lock.yaml
 
 # Tauri generated
 src-tauri/gen/schemas/
+src-tauri/windows-runtime/
 
 # Whisper model cache
 *.ggml

@@ -1,3 +1,4 @@
+#[cfg(target_os = "windows")]
 use std::{
     env, fs,
     io,
@@ -5,6 +6,11 @@ use std::{
 };
 
 fn main() {
+    #[cfg(target_os = "windows")]
+    reset_windows_runtime_stage_dir().unwrap_or_else(|err| {
+        panic!("Failed to reset Windows runtime staging dir: {err}");
+    });
+
     #[cfg(target_os = "windows")]
     copy_ffmpeg_runtime_dlls().unwrap_or_else(|err| {
         panic!("Failed to prepare FFmpeg runtime DLLs: {err}");
@@ -24,13 +30,8 @@ fn copy_ffmpeg_runtime_dlls() -> io::Result<()> {
     println!("cargo:rerun-if-env-changed=VCPKG_DEFAULT_TRIPLET");
     println!("cargo:rerun-if-env-changed=FFMPEG_DIR");
 
-    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap_or_default());
-    let target_dir = find_target_profile_dir(&out_dir).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("Unable to resolve target dir from OUT_DIR: {}", out_dir.display()),
-        )
-    })?;
+    let target_dir = windows_target_dir()?;
+    let stage_dir = windows_runtime_stage_dir()?;
 
     let mut candidates = ffmpeg_bin_candidates();
     candidates.retain(|path| path.exists());
@@ -48,7 +49,7 @@ fn copy_ffmpeg_runtime_dlls() -> io::Result<()> {
 
     let mut copied = Vec::new();
     for dll_dir in candidates {
-        copy_dlls_from_dir(&dll_dir, &target_dir, &mut copied)?;
+        copy_dlls_from_dir(&dll_dir, &target_dir, &stage_dir, &mut copied)?;
     }
 
     let missing = missing_required_dlls(&copied);
@@ -73,17 +74,13 @@ fn copy_ffmpeg_runtime_dlls() -> io::Result<()> {
 
 #[cfg(target_os = "windows")]
 fn prepare_optional_windows_runtimes() -> io::Result<()> {
-    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap_or_default());
-    let target_dir = find_target_profile_dir(&out_dir).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("Unable to resolve target dir from OUT_DIR: {}", out_dir.display()),
-        )
-    })?;
+    let target_dir = windows_target_dir()?;
+    let stage_dir = windows_runtime_stage_dir()?;
 
     if cargo_feature_enabled("OFFLINE_TRANSLATE") {
         copy_required_runtime_from_candidates(
             &target_dir,
+            &stage_dir,
             &onnxruntime_candidates(),
             "onnxruntime.dll",
             "ONNX Runtime",
@@ -126,6 +123,7 @@ fn missing_required_dlls(copied: &[String]) -> Vec<String> {
 fn copy_dlls_from_dir(
     source_dir: &Path,
     target_dir: &Path,
+    stage_dir: &Path,
     copied: &mut Vec<String>,
 ) -> io::Result<()> {
     let required_in_dir = REQUIRED_FFMPEG_DLLS
@@ -143,10 +141,13 @@ fn copy_dlls_from_dir(
         })?;
         let destination = target_dir.join(file_name);
         fs::copy(&path, &destination)?;
+        let staged_destination = stage_dir.join(file_name);
+        fs::copy(&path, &staged_destination)?;
         println!(
-            "cargo:warning=Copied required runtime DLL {} -> {}",
+            "cargo:warning=Copied required runtime DLL {} -> {} and {}",
             path.display(),
-            destination.display()
+            destination.display(),
+            staged_destination.display()
         );
         copied.push(file_name.to_string());
     }
@@ -157,16 +158,19 @@ fn copy_dlls_from_dir(
 #[cfg(target_os = "windows")]
 fn copy_required_runtime_from_candidates(
     target_dir: &Path,
+    stage_dir: &Path,
     candidates: &[PathBuf],
     dll_name: &str,
     runtime_label: &str,
 ) -> io::Result<()> {
     let target_path = target_dir.join(dll_name);
-    if target_path.exists() {
+    let stage_path = stage_dir.join(dll_name);
+    if target_path.exists() && stage_path.exists() {
         println!(
-            "cargo:warning={} already available at {}",
+            "cargo:warning={} already available at {} and {}",
             runtime_label,
-            target_path.display()
+            target_path.display(),
+            stage_path.display()
         );
         return Ok(());
     }
@@ -178,11 +182,13 @@ fn copy_required_runtime_from_candidates(
         }
 
         fs::copy(&candidate_file, &target_path)?;
+        fs::copy(&candidate_file, &stage_path)?;
         println!(
-            "cargo:warning=Copied {} DLL {} -> {}",
+            "cargo:warning=Copied {} DLL {} -> {} and {}",
             runtime_label,
             candidate_file.display(),
-            target_path.display()
+            target_path.display(),
+            stage_path.display()
         );
         return Ok(());
     }
@@ -254,6 +260,49 @@ fn onnxruntime_candidates() -> Vec<PathBuf> {
 #[cfg(target_os = "windows")]
 fn cargo_feature_enabled(feature_name: &str) -> bool {
     env::var_os(format!("CARGO_FEATURE_{feature_name}")).is_some()
+}
+
+#[cfg(target_os = "windows")]
+fn windows_target_dir() -> io::Result<PathBuf> {
+    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap_or_default());
+    find_target_profile_dir(&out_dir).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("Unable to resolve target dir from OUT_DIR: {}", out_dir.display()),
+        )
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn windows_runtime_stage_dir() -> io::Result<PathBuf> {
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("CARGO_MANIFEST_DIR is not set: {err}"),
+        )
+    })?);
+    Ok(manifest_dir.join("windows-runtime"))
+}
+
+#[cfg(target_os = "windows")]
+fn reset_windows_runtime_stage_dir() -> io::Result<()> {
+    let stage_dir = windows_runtime_stage_dir()?;
+    fs::create_dir_all(&stage_dir)?;
+
+    for entry in fs::read_dir(&stage_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let is_dll = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.eq_ignore_ascii_case("dll"))
+            .unwrap_or(false);
+        if is_dll {
+            fs::remove_file(path)?;
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]
