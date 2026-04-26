@@ -106,15 +106,11 @@ echo ""
 echo "[5/5] 配置 bindgen..."
 CARGO_CONFIG_DIR="src-tauri/.cargo"
 mkdir -p "$CARGO_CONFIG_DIR"
-if [ -f "$CARGO_CONFIG_DIR/config.toml" ]; then
-    echo "  ✓ $CARGO_CONFIG_DIR/config.toml 已存在，跳过"
-else
-    cat > "$CARGO_CONFIG_DIR/config.toml" << EOF
+cat > "$CARGO_CONFIG_DIR/config.toml" << EOF
 [env]
 BINDGEN_EXTRA_CLANG_ARGS = "-I/usr/include -I/usr/local/include"
 EOF
-    echo "  ✓ 已写入 $CARGO_CONFIG_DIR/config.toml"
-fi
+echo "  ✓ 已写入 $CARGO_CONFIG_DIR/config.toml"
 
 echo ""
 echo "=========================================="

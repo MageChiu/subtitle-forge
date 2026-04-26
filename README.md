@@ -2,6 +2,44 @@
 
 SubtitleForge 是一个基于 `Tauri v2 + React + Rust` 的桌面应用，用于从视频中生成字幕，并在需要时生成双语字幕。
 
+## 开发环境初始化
+
+首次在本地开发前，请先执行与当前平台对应的初始化脚本：
+
+```bash
+# macOS
+./scripts/init-macos.sh
+
+# Linux
+./scripts/init-linux.sh
+
+# Windows PowerShell / cmd
+scripts\init-windows.bat
+```
+
+初始化脚本会负责安装依赖、设置环境变量，并在需要时生成当前平台专用的本地配置。
+
+## 本地配置约定
+
+- `src-tauri/.cargo` 是本地编译环境目录，已被 Git 忽略，不应提交到仓库
+- 不同平台使用不同配置来源：
+  - Windows 通过 `init-windows.bat` 写入环境变量
+  - macOS / Linux 通过各自的 `init` 脚本生成 `src-tauri/.cargo/config.toml`
+- 若切换开发平台或遇到构建异常，请重新执行对应平台的 `init` 脚本
+
+## 启动前检查
+
+- `pnpm tauri dev`
+- `pnpm tauri build`
+
+在执行前会先运行预检查：
+
+- Windows 若检测到遗留的 `src-tauri/.cargo/config.toml`，会直接报错并提示重新执行 `init-windows.bat`
+- macOS / Linux 若缺少 `src-tauri/.cargo/config.toml`，会提示先执行对应平台的 `init` 脚本
+- Windows 若缺少 `FFMPEG_DIR`、`LIBCLANG_PATH`、`BINDGEN_EXTRA_CLANG_ARGS` 等关键环境变量，也会直接提示
+
+这样可以尽量把“环境没初始化”与“代码本身有问题”区分开。
+
 ## 当前工作流程
 
 当前实现的主流程如下：
