@@ -1,6 +1,7 @@
 use crate::asr::engine::LanguageInfo;
 use crate::asr::models::{DownloadProgress, ModelInfo, ModelManager};
 use crate::asr::whisper::WhisperEngine;
+use crate::asr::capabilities::AsrRuntimeCapabilities;
 use crate::audio::extractor::MediaInfo;
 use crate::config::settings::AppConfig;
 use crate::pipeline::orchestrator::{PipelineConfig, PipelineOrchestrator, PipelineStage};
@@ -465,6 +466,11 @@ pub async fn get_supported_languages() -> Vec<LanguageInfo> {
 #[tauri::command]
 pub async fn get_app_config(state: State<'_, AppState>) -> Result<AppConfig, String> {
     Ok(state.app_config.lock().await.clone())
+}
+
+#[tauri::command]
+pub async fn get_asr_runtime_capabilities() -> Result<AsrRuntimeCapabilities, String> {
+    Ok(crate::asr::capabilities::runtime_capabilities())
 }
 
 #[tauri::command]

@@ -9,6 +9,11 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "node ./scripts/tauri-preflight.mjs && tauri",
+    "tauri:dev": "node ./scripts/tauri-preflight.mjs && tauri dev",
+    "tauri:build": "node ./scripts/tauri-preflight.mjs && tauri build",
+    "tauri:build:openblas": "node ./scripts/tauri-preflight.mjs && tauri build --features openblas",
+    "tauri:build:cuda": "node ./scripts/tauri-preflight.mjs && tauri build --features cuda",
+    "tauri:build:coreml": "node ./scripts/tauri-preflight.mjs && tauri build --features coreml",
     "tauri:dev:metal": "node ./scripts/tauri-preflight.mjs && tauri dev --features metal",
     "tauri:build:metal": "node ./scripts/tauri-preflight.mjs && tauri build --features metal"
   },

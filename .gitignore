@@ -54,3 +54,6 @@ src-tauri/windows-runtime/
 src-tauri/.cargo
 src-tauri/Cargo.lock
 .cache
+
+# trae
+.trae/

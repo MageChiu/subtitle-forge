@@ -45,6 +45,21 @@ interface EmbeddedDownloadProgress {
   total_bytes: number;
 }
 
+interface AsrFeatureStatus {
+  key: string;
+  label: string;
+  enabled: boolean;
+  detail: string;
+}
+
+interface AsrRuntimeCapabilities {
+  app_version: string;
+  whisper_backend: string;
+  gpu_backend_available: boolean;
+  enabled_gpu_backends: string[];
+  features: AsrFeatureStatus[];
+}
+
 interface SettingsDialogProps {
   onClose: () => void;
   onModelChange?: () => void;
@@ -176,6 +191,8 @@ export function SettingsDialog({ onClose, onModelChange }: SettingsDialogProps) 
   const [settings, setSettings] = useState<TranslationSettings | null>(null);
   const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
   const [healthStatus, setHealthStatus] = useState<string | null>(null);
+  const [asrCapabilities, setAsrCapabilities] = useState<AsrRuntimeCapabilities | null>(null);
+  const [showAsrCapabilities, setShowAsrCapabilities] = useState(false);
 
   const loadModels = useCallback(async () => {
     const list = await invoke<ModelInfo[]>("list_models");
@@ -188,16 +205,18 @@ export function SettingsDialog({ onClose, onModelChange }: SettingsDialogProps) 
   }, []);
 
   const loadTranslateSettings = useCallback(async () => {
-    const [modeList, serviceList, saved, savedAppConfig] = await Promise.all([
+    const [modeList, serviceList, saved, savedAppConfig, runtimeCapabilities] = await Promise.all([
       invoke<TranslateModeInfo[]>("list_translate_modes"),
       invoke<ServiceInfo[]>("list_translate_services"),
       invoke<TranslationSettings>("get_translate_settings"),
       invoke<AppConfig>("get_app_config"),
+      invoke<AsrRuntimeCapabilities>("get_asr_runtime_capabilities"),
     ]);
     setModes(modeList);
     setServices(serviceList);
     setSettings(saved);
     setAppConfig(savedAppConfig);
+    setAsrCapabilities(runtimeCapabilities);
   }, []);
 
   useEffect(() => {
@@ -432,11 +451,66 @@ export function SettingsDialog({ onClose, onModelChange }: SettingsDialogProps) 
         </div>
 
         <section className="mb-6">
-          <h3 className="mb-3 text-sm font-medium uppercase tracking-wider text-gray-500">
-            ASR 性能
-          </h3>
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <h3 className="text-sm font-medium uppercase tracking-wider text-gray-500">ASR 性能</h3>
+            <button
+              onClick={() => setShowAsrCapabilities((value) => !value)}
+              className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs hover:bg-gray-100 dark:border-gray-600 dark:hover:bg-gray-700"
+            >
+              {showAsrCapabilities ? "收起当前构建特性" : "查看当前构建特性"}
+            </button>
+          </div>
 
           <div className="rounded-lg border border-gray-200 p-4 dark:border-gray-700">
+            <div className="mb-4 flex flex-wrap items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+              <span className="rounded-full bg-gray-100 px-2 py-1 dark:bg-gray-700">
+                当前版本 {asrCapabilities ? `v${asrCapabilities.app_version}` : "加载中..."}
+              </span>
+              <span className="rounded-full bg-gray-100 px-2 py-1 dark:bg-gray-700">
+                ASR 引擎 {asrCapabilities?.whisper_backend ?? "加载中..."}
+              </span>
+              <span className="rounded-full bg-gray-100 px-2 py-1 dark:bg-gray-700">
+                GPU 后端{" "}
+                {asrCapabilities
+                  ? asrCapabilities.enabled_gpu_backends.length > 0
+                    ? asrCapabilities.enabled_gpu_backends.join(" / ")
+                    : "未启用"
+                  : "加载中..."}
+              </span>
+            </div>
+
+            {showAsrCapabilities && asrCapabilities && (
+              <div className="mb-4 rounded-lg bg-gray-50 p-3 dark:bg-gray-900/60">
+                <div className="mb-3 text-xs text-gray-500 dark:text-gray-400">
+                  当前版本中已编译的 ASR 性能相关能力如下，GPU 开关是否生效取决于这些特性是否可用。
+                </div>
+                <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                  {asrCapabilities.features.map((feature) => (
+                    <div
+                      key={feature.key}
+                      className="rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-800"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-sm font-medium">{feature.label}</span>
+                        <span
+                          className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
+                            feature.enabled
+                              ? "bg-green-500/15 text-green-600 dark:text-green-400"
+                              : "bg-gray-500/15 text-gray-600 dark:text-gray-400"
+                          }`}
+                        >
+                          {feature.enabled ? "已启用" : "未启用"}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                        {feature.detail}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <label className="flex items-center gap-2 text-sm">
               <input
                 type="checkbox"
@@ -446,7 +520,9 @@ export function SettingsDialog({ onClose, onModelChange }: SettingsDialogProps) 
               <span>启用 GPU 加速</span>
             </label>
             <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
-              仅在当前构建已启用 `metal`、`coreml`、`cuda` 等 Whisper 后端时生效。
+              {asrCapabilities?.gpu_backend_available
+                ? `当前构建已启用 ${asrCapabilities.enabled_gpu_backends.join(" / ")} 等 ASR GPU 后端，打开后可尝试使用硬件加速。`
+                : "当前构建未启用可用的 ASR GPU 后端，打开该选项通常不会生效。"}
             </p>
 
             <div className="mt-4">

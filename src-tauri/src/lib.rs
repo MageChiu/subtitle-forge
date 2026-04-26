@@ -98,6 +98,7 @@ pub fn run() {
             commands::probe_video,
             commands::get_supported_languages,
             commands::get_app_config,
+            commands::get_asr_runtime_capabilities,
             commands::save_app_config,
         ])
         .run(tauri::generate_context!())
