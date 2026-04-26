@@ -40,9 +40,61 @@ scripts\init-windows.bat
 
 这样可以尽量把“环境没初始化”与“代码本身有问题”区分开。
 
+## 安装版本
+
+发布页现在会按平台和能力区分安装包名称，便于用户直接选择合适版本：
+
+- `macos-intel-metal`
+  - 适用于 Intel Mac
+  - 默认包含 Metal 后端
+- `macos-apple-silicon-metal`
+  - 适用于 Apple Silicon Mac
+  - 默认包含 Metal 后端
+- `windows-x64-standard`
+  - 适用于常规 64 位 Windows
+  - 不额外要求 CUDA 运行时
+- `windows-x64-openblas`
+  - 适用于常规 64 位 Windows
+  - 启用 `openblas`，偏向 CPU 推理性能优化
+- `windows-arm64-standard`
+  - 适用于 Windows ARM64
+  - 不额外要求 CUDA 运行时
+- `linux-x64-standard`
+  - 适用于通用 64 位 Linux
+  - 追求兼容性优先
+- `linux-x64-openblas`
+  - 适用于 64 位 Linux
+  - 启用 `openblas`，偏向 CPU 性能优化
+
+当前会在 CI 中自动发布 `windows-x64-openblas` 版本，但还没有自动发布 `cuda` 版本。
+
+原因是 `cuda` 版本通常要求构建机和目标机都具备额外的 CUDA 工具链或运行时，GitHub Hosted Windows runner 难以稳定提供这类环境。后续如果引入专门的 Windows CUDA 构建环境，可以再把它加入官方发布矩阵。
+
+## 本地构建不同版本
+
+如果需要在本地手动构建特性版安装包，可以使用这些命令：
+
+```bash
+# 通用构建
+pnpm tauri:build
+
+# Linux / Windows，需启用 CPU BLAS 加速时
+pnpm tauri:build:openblas
+
+# 具备 CUDA 构建环境时
+pnpm tauri:build:cuda
+
+# Apple Core ML 版本
+pnpm tauri:build:coreml
+
+# macOS Metal 版本
+pnpm tauri:build:metal
+```
+
+建议优先选择与当前操作系统和硬件匹配的版本，不要盲目选择带更多 feature 的安装包。
+
 ## 当前工作流程
 
-当前实现的主流程如下：
 
 1. 选择输入视频文件
 2. 提取音频

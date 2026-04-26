@@ -48,7 +48,7 @@ env:
 jobs:
   # macOS Intel (x86_64)
   build-macos-intel:
-    name: Build macOS Intel
+    name: Build macOS Intel Metal
     runs-on: macos-15-intel
     timeout-minutes: 60
     continue-on-error: true
@@ -58,7 +58,7 @@ jobs:
       - name: Log build info
         run: |
           echo "=== Build Info ==="
-          echo "Platform: macOS Intel (x86_64)"
+          echo "Platform: macOS Intel (x86_64, Metal)"
           echo "Runner: ${{ runner.os }} ${{ runner.arch }}"
           echo "Ref: ${{ github.ref }}"
           echo "Event: ${{ github.event_name }}"
@@ -147,9 +147,19 @@ jobs:
           echo "=== Preparing artifacts ==="
           mkdir -p release-artifacts
           echo "Copying DMG files..."
-          cp src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg release-artifacts/ 2>/dev/null && echo "DMG files copied" || echo "No DMG files found"
+          for file in src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg; do
+            [ -e "$file" ] || continue
+            base="$(basename "$file" .dmg)"
+            cp "$file" "release-artifacts/${base}-macos-intel-metal.dmg"
+          done
+          ls release-artifacts/*.dmg >/dev/null 2>&1 && echo "DMG files copied" || echo "No DMG files found"
           echo "Copying APP files..."
-          cp -r src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app release-artifacts/ 2>/dev/null && echo "APP files copied" || echo "No APP files found"
+          for file in src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app; do
+            [ -e "$file" ] || continue
+            base="$(basename "$file" .app)"
+            cp -R "$file" "release-artifacts/${base}-macos-intel-metal.app"
+          done
+          find release-artifacts -maxdepth 1 -name "*.app" | grep -q . && echo "APP files copied" || echo "No APP files found"
           echo "Artifacts in release-artifacts:"
           ls -la release-artifacts/
           echo "artifact-path=release-artifacts" >> $GITHUB_OUTPUT
@@ -158,13 +168,13 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: subtitle-forge-macos-intel
+          name: subtitle-forge-macos-intel-metal
           path: release-artifacts/*
           if-no-files-found: warn
 
   # macOS Apple Silicon (aarch64)
   build-macos-arm:
-    name: Build macOS Apple Silicon
+    name: Build macOS Apple Silicon Metal
     runs-on: macos-latest
     timeout-minutes: 60
     continue-on-error: true
@@ -174,7 +184,7 @@ jobs:
       - name: Log build info
         run: |
           echo "=== Build Info ==="
-          echo "Platform: macOS Apple Silicon (aarch64)"
+          echo "Platform: macOS Apple Silicon (aarch64, Metal)"
           echo "Runner: ${{ runner.os }} ${{ runner.arch }}"
           echo "Ref: ${{ github.ref }}"
           echo "Event: ${{ github.event_name }}"
@@ -263,9 +273,19 @@ jobs:
           echo "=== Preparing artifacts ==="
           mkdir -p release-artifacts
           echo "Copying DMG files..."
-          cp src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg release-artifacts/ 2>/dev/null && echo "DMG files copied" || echo "No DMG files found"
+          for file in src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg; do
+            [ -e "$file" ] || continue
+            base="$(basename "$file" .dmg)"
+            cp "$file" "release-artifacts/${base}-macos-apple-silicon-metal.dmg"
+          done
+          ls release-artifacts/*.dmg >/dev/null 2>&1 && echo "DMG files copied" || echo "No DMG files found"
           echo "Copying APP files..."
-          cp -r src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app release-artifacts/ 2>/dev/null && echo "APP files copied" || echo "No APP files found"
+          for file in src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app; do
+            [ -e "$file" ] || continue
+            base="$(basename "$file" .app)"
+            cp -R "$file" "release-artifacts/${base}-macos-apple-silicon-metal.app"
+          done
+          find release-artifacts -maxdepth 1 -name "*.app" | grep -q . && echo "APP files copied" || echo "No APP files found"
           echo "Artifacts in release-artifacts:"
           ls -la release-artifacts/
           echo "artifact-path=release-artifacts" >> $GITHUB_OUTPUT
@@ -274,13 +294,13 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: subtitle-forge-macos-arm
+          name: subtitle-forge-macos-arm-metal
           path: release-artifacts/*
           if-no-files-found: warn
 
   # Windows x86_64
   build-windows-x64:
-    name: Build Windows x64
+    name: Build Windows x64 Standard
     runs-on: windows-latest
     timeout-minutes: 60
     continue-on-error: true
@@ -291,7 +311,7 @@ jobs:
         shell: pwsh
         run: |
           Write-Host "=== Build Info ==="
-          Write-Host "Platform: Windows x64 (x86_64)"
+          Write-Host "Platform: Windows x64 (x86_64, Standard)"
           Write-Host "Runner: $env:RUNNER_OS $env:RUNNER_ARCH"
           Write-Host "Ref: $env:GITHUB_REF"
           Write-Host "Event: $env:GITHUB_EVENT_NAME"
@@ -434,11 +454,25 @@ jobs:
           Write-Host "=== Preparing artifacts ==="
           New-Item -ItemType Directory -Force -Path release-artifacts
           Write-Host "Copying MSI files..."
-          Copy-Item -Path "src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi" -Destination "release-artifacts/" -ErrorAction SilentlyContinue
-          if ($?) { Write-Host "MSI files copied" } else { Write-Host "No MSI files found" }
+          $msiFiles = Get-ChildItem -Path "src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi" -ErrorAction SilentlyContinue
+          if ($msiFiles) {
+            foreach ($file in $msiFiles) {
+              Copy-Item -Path $file.FullName -Destination ("release-artifacts/{0}-windows-x64-standard{1}" -f $file.BaseName, $file.Extension)
+            }
+            Write-Host "MSI files copied"
+          } else {
+            Write-Host "No MSI files found"
+          }
           Write-Host "Copying NSIS files..."
-          Copy-Item -Path "src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe" -Destination "release-artifacts/" -ErrorAction SilentlyContinue
-          if ($?) { Write-Host "NSIS files copied" } else { Write-Host "No NSIS files found" }
+          $nsisFiles = Get-ChildItem -Path "src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe" -ErrorAction SilentlyContinue
+          if ($nsisFiles) {
+            foreach ($file in $nsisFiles) {
+              Copy-Item -Path $file.FullName -Destination ("release-artifacts/{0}-windows-x64-standard{1}" -f $file.BaseName, $file.Extension)
+            }
+            Write-Host "NSIS files copied"
+          } else {
+            Write-Host "No NSIS files found"
+          }
           Write-Host "Artifacts in release-artifacts:"
           Get-ChildItem -Path "release-artifacts/"
           echo "artifact-path=release-artifacts" >> $env:GITHUB_OUTPUT
@@ -447,13 +481,199 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: subtitle-forge-windows-x64
+          name: subtitle-forge-windows-x64-standard
+          path: release-artifacts/*
+          if-no-files-found: warn
+
+  build-windows-x64-openblas:
+    name: Build Windows x64 OpenBLAS
+    runs-on: windows-latest
+    timeout-minutes: 60
+    continue-on-error: true
+    outputs:
+      artifact-path: ${{ steps.upload.outputs.artifact-path }}
+    steps:
+      - name: Log build info
+        shell: pwsh
+        run: |
+          Write-Host "=== Build Info ==="
+          Write-Host "Platform: Windows x64 (x86_64, OpenBLAS)"
+          Write-Host "Runner: $env:RUNNER_OS $env:RUNNER_ARCH"
+          Write-Host "Ref: $env:GITHUB_REF"
+          Write-Host "Event: $env:GITHUB_EVENT_NAME"
+          Write-Host "Commit: $env:GITHUB_SHA"
+          Write-Host "=================="
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          target: x86_64-pc-windows-msvc
+
+      - name: Setup vcpkg
+        shell: pwsh
+        run: |
+          git clone --depth 1 https://github.com/microsoft/vcpkg.git "$env:RUNNER_TEMP\vcpkg"
+          & "$env:RUNNER_TEMP\vcpkg\bootstrap-vcpkg.bat" -disableMetrics
+          "VCPKG_ROOT=$env:RUNNER_TEMP\vcpkg" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "VCPKG_DEFAULT_TRIPLET=x64-windows" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "VCPKGRS_DYNAMIC=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install FFmpeg via vcpkg
+        shell: pwsh
+        run: |
+          & "$env:RUNNER_TEMP\vcpkg\vcpkg.exe" install "ffmpeg[avcodec,avdevice,avfilter,avformat,swresample,swscale]:x64-windows" --clean-after-build
+          & "$env:RUNNER_TEMP\vcpkg\vcpkg.exe" list | Select-String ffmpeg
+
+      - name: Log environment
+        shell: pwsh
+        run: |
+          function Get-Version($command, $label) {
+            if (Get-Command $command -ErrorAction SilentlyContinue) {
+              $version = & $command --version 2>$null
+              Write-Host "${label}: $version"
+            } else {
+              Write-Host "${label}: not installed"
+            }
+          }
+
+          Write-Host "=== Environment ==="
+          Get-Version node "Node version"
+          Get-Version pnpm "pnpm version"
+          Get-Version rustc "Rust version"
+          Get-Version cargo "Cargo version"
+          Write-Host "==================="
+
+      - name: Verify Rust installation
+        shell: pwsh
+        run: |
+          Write-Host "=== Rust Installation ==="
+          rustc --version
+          cargo --version
+          rustup show
+          rustup target list --installed
+          Write-Host "========================="
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          Write-Host "=== Installing Node dependencies ==="
+          pnpm install
+          Write-Host "===================================="
+
+      - name: Install Tauri CLI
+        shell: pwsh
+        run: |
+          Write-Host "=== Installing Tauri CLI ==="
+          cargo install tauri-cli --version '^2.0.0' --locked --verbose
+          cargo tauri --version
+          Write-Host "============================"
+
+      - name: Build Tauri app
+        shell: pwsh
+        run: |
+          Write-Host "=== Building Tauri app for x86_64-pc-windows-msvc with OpenBLAS ==="
+          cargo tauri build --target x86_64-pc-windows-msvc --features openblas --verbose
+          Write-Host "=================================================================="
+        env:
+          CI: true
+          RUST_BACKTRACE: full
+
+      - name: Verify required FFmpeg DLLs
+        shell: pwsh
+        run: |
+          $requiredDlls = @(
+            "avcodec-62.dll",
+            "avutil-60.dll",
+            "avformat-62.dll",
+            "swresample-6.dll"
+          )
+          $releaseDir = "src-tauri/target/x86_64-pc-windows-msvc/release"
+          $resourceStageDir = "src-tauri/windows-runtime"
+
+          Write-Host "=== Verifying FFmpeg DLLs in release dir ==="
+          foreach ($dll in $requiredDlls) {
+            $releasePath = Join-Path $releaseDir $dll
+            if (-not (Test-Path $releasePath)) {
+              throw "Missing required DLL in release dir: $dll"
+            }
+            Write-Host "Found in release dir: $releasePath"
+          }
+
+          Write-Host "=== Verifying FFmpeg DLLs in Windows resource stage dir ==="
+          foreach ($dll in $requiredDlls) {
+            $resourcePath = Join-Path $resourceStageDir $dll
+            if (-not (Test-Path $resourcePath)) {
+              throw "Missing required DLL in Windows resource stage dir: $dll"
+            }
+            Write-Host "Found in resource stage dir: $resourcePath"
+          }
+          Write-Host "============================================"
+
+      - name: List build outputs
+        shell: pwsh
+        run: |
+          Write-Host "=== Build outputs ==="
+          Get-ChildItem -Path "src-tauri/target/x86_64-pc-windows-msvc/release/" -ErrorAction SilentlyContinue | Select-Object -First 20
+          Get-ChildItem -Path "src-tauri/target/x86_64-pc-windows-msvc/release/bundle/" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 20
+          Get-ChildItem -Path "src-tauri/target/x86_64-pc-windows-msvc/release/bundle/" -Filter "*.msi" -Recurse -ErrorAction SilentlyContinue
+          Get-ChildItem -Path "src-tauri/target/x86_64-pc-windows-msvc/release/bundle/" -Filter "*.exe" -Recurse -ErrorAction SilentlyContinue
+          Write-Host "===================="
+
+      - name: Prepare artifacts
+        id: upload
+        shell: pwsh
+        run: |
+          Write-Host "=== Preparing artifacts ==="
+          New-Item -ItemType Directory -Force -Path release-artifacts
+          Write-Host "Copying MSI files..."
+          $msiFiles = Get-ChildItem -Path "src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi" -ErrorAction SilentlyContinue
+          if ($msiFiles) {
+            foreach ($file in $msiFiles) {
+              Copy-Item -Path $file.FullName -Destination ("release-artifacts/{0}-windows-x64-openblas{1}" -f $file.BaseName, $file.Extension)
+            }
+            Write-Host "MSI files copied"
+          } else {
+            Write-Host "No MSI files found"
+          }
+          Write-Host "Copying NSIS files..."
+          $nsisFiles = Get-ChildItem -Path "src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe" -ErrorAction SilentlyContinue
+          if ($nsisFiles) {
+            foreach ($file in $nsisFiles) {
+              Copy-Item -Path $file.FullName -Destination ("release-artifacts/{0}-windows-x64-openblas{1}" -f $file.BaseName, $file.Extension)
+            }
+            Write-Host "NSIS files copied"
+          } else {
+            Write-Host "No NSIS files found"
+          }
+          Write-Host "Artifacts in release-artifacts:"
+          Get-ChildItem -Path "release-artifacts/"
+          echo "artifact-path=release-artifacts" >> $env:GITHUB_OUTPUT
+          Write-Host "==========================="
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: subtitle-forge-windows-x64-openblas
           path: release-artifacts/*
           if-no-files-found: warn
 
   # Windows ARM64
   build-windows-arm:
-    name: Build Windows ARM64
+    name: Build Windows ARM64 Standard
     runs-on: windows-11-arm
     timeout-minutes: 60
     continue-on-error: true
@@ -464,7 +684,7 @@ jobs:
         shell: pwsh
         run: |
           Write-Host "=== Build Info ==="
-          Write-Host "Platform: Windows ARM64 (aarch64)"
+          Write-Host "Platform: Windows ARM64 (aarch64, Standard)"
           Write-Host "Runner: $env:RUNNER_OS $env:RUNNER_ARCH"
           Write-Host "Ref: $env:GITHUB_REF"
           Write-Host "Event: $env:GITHUB_EVENT_NAME"
@@ -615,11 +835,25 @@ jobs:
           Write-Host "=== Preparing artifacts ==="
           New-Item -ItemType Directory -Force -Path release-artifacts
           Write-Host "Copying MSI files..."
-          Copy-Item -Path "src-tauri/target/aarch64-pc-windows-msvc/release/bundle/msi/*.msi" -Destination "release-artifacts/" -ErrorAction SilentlyContinue
-          if ($?) { Write-Host "MSI files copied" } else { Write-Host "No MSI files found" }
+          $msiFiles = Get-ChildItem -Path "src-tauri/target/aarch64-pc-windows-msvc/release/bundle/msi/*.msi" -ErrorAction SilentlyContinue
+          if ($msiFiles) {
+            foreach ($file in $msiFiles) {
+              Copy-Item -Path $file.FullName -Destination ("release-artifacts/{0}-windows-arm64-standard{1}" -f $file.BaseName, $file.Extension)
+            }
+            Write-Host "MSI files copied"
+          } else {
+            Write-Host "No MSI files found"
+          }
           Write-Host "Copying NSIS files..."
-          Copy-Item -Path "src-tauri/target/aarch64-pc-windows-msvc/release/bundle/nsis/*.exe" -Destination "release-artifacts/" -ErrorAction SilentlyContinue
-          if ($?) { Write-Host "NSIS files copied" } else { Write-Host "No NSIS files found" }
+          $nsisFiles = Get-ChildItem -Path "src-tauri/target/aarch64-pc-windows-msvc/release/bundle/nsis/*.exe" -ErrorAction SilentlyContinue
+          if ($nsisFiles) {
+            foreach ($file in $nsisFiles) {
+              Copy-Item -Path $file.FullName -Destination ("release-artifacts/{0}-windows-arm64-standard{1}" -f $file.BaseName, $file.Extension)
+            }
+            Write-Host "NSIS files copied"
+          } else {
+            Write-Host "No NSIS files found"
+          }
           Write-Host "Artifacts in release-artifacts:"
           Get-ChildItem -Path "release-artifacts/"
           echo "artifact-path=release-artifacts" >> $env:GITHUB_OUTPUT
@@ -628,13 +862,13 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: subtitle-forge-windows-arm
+          name: subtitle-forge-windows-arm-standard
           path: release-artifacts/*
           if-no-files-found: warn
 
   # Linux x86_64
   build-linux-x64:
-    name: Build Linux x64
+    name: Build Linux x64 Standard
     runs-on: ubuntu-22.04
     timeout-minutes: 60
     continue-on-error: true
@@ -644,7 +878,7 @@ jobs:
       - name: Log build info
         run: |
           echo "=== Build Info ==="
-          echo "Platform: Linux x64 (x86_64)"
+          echo "Platform: Linux x64 (x86_64, Standard)"
           echo "Runner: ${{ runner.os }} ${{ runner.arch }}"
           echo "Ref: ${{ github.ref }}"
           echo "Event: ${{ github.event_name }}"
@@ -734,11 +968,26 @@ jobs:
           echo "=== Preparing artifacts ==="
           mkdir -p release-artifacts
           echo "Copying DEB files..."
-          cp src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb release-artifacts/ 2>/dev/null && echo "DEB files copied" || echo "No DEB files found"
+          for file in src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb; do
+            [ -e "$file" ] || continue
+            base="$(basename "$file" .deb)"
+            cp "$file" "release-artifacts/${base}-linux-x64-standard.deb"
+          done
+          ls release-artifacts/*.deb >/dev/null 2>&1 && echo "DEB files copied" || echo "No DEB files found"
           echo "Copying AppImage files..."
-          cp src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage release-artifacts/ 2>/dev/null && echo "AppImage files copied" || echo "No AppImage files found"
+          for file in src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage; do
+            [ -e "$file" ] || continue
+            base="$(basename "$file" .AppImage)"
+            cp "$file" "release-artifacts/${base}-linux-x64-standard.AppImage"
+          done
+          ls release-artifacts/*.AppImage >/dev/null 2>&1 && echo "AppImage files copied" || echo "No AppImage files found"
           echo "Copying RPM files..."
-          cp src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/rpm/*.rpm release-artifacts/ 2>/dev/null && echo "RPM files copied" || echo "No RPM files found"
+          for file in src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/rpm/*.rpm; do
+            [ -e "$file" ] || continue
+            base="$(basename "$file" .rpm)"
+            cp "$file" "release-artifacts/${base}-linux-x64-standard.rpm"
+          done
+          ls release-artifacts/*.rpm >/dev/null 2>&1 && echo "RPM files copied" || echo "No RPM files found"
           echo "Artifacts in release-artifacts:"
           ls -la release-artifacts/
           echo "artifact-path=release-artifacts" >> $GITHUB_OUTPUT
@@ -747,7 +996,140 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: subtitle-forge-linux-x64
+          name: subtitle-forge-linux-x64-standard
+          path: release-artifacts/*
+          if-no-files-found: warn
+
+  build-linux-x64-openblas:
+    name: Build Linux x64 OpenBLAS
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    continue-on-error: true
+    outputs:
+      artifact-path: ${{ steps.upload.outputs.artifact-path }}
+    steps:
+      - name: Log build info
+        run: |
+          echo "=== Build Info ==="
+          echo "Platform: Linux x64 (x86_64, OpenBLAS)"
+          echo "Runner: ${{ runner.os }} ${{ runner.arch }}"
+          echo "Ref: ${{ github.ref }}"
+          echo "Event: ${{ github.event_name }}"
+          echo "Commit: ${{ github.sha }}"
+          echo "=================="
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log environment
+        run: |
+          echo "=== Environment ==="
+          echo "Node version: $(node --version 2>/dev/null || echo 'not installed')"
+          echo "pnpm version: $(pnpm --version 2>/dev/null || echo 'not installed')"
+          echo "Rust version: $(rustc --version 2>/dev/null || echo 'not installed')"
+          echo "Cargo version: $(cargo --version 2>/dev/null || echo 'not installed')"
+          echo "==================="
+
+      - name: Install system dependencies
+        run: |
+          echo "=== Installing system dependencies ==="
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf pkg-config libavcodec-dev libavdevice-dev libavfilter-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev libopenblas-dev
+          pkg-config --modversion libavutil
+          echo "====================================="
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          target: x86_64-unknown-linux-gnu
+
+      - name: Verify Rust installation
+        run: |
+          echo "=== Rust Installation ==="
+          rustc --version
+          cargo --version
+          rustup show
+          rustup target list --installed
+          echo "========================="
+
+      - name: Install dependencies
+        run: |
+          echo "=== Installing Node dependencies ==="
+          pnpm install
+          echo "===================================="
+
+      - name: Install Tauri CLI
+        run: |
+          echo "=== Installing Tauri CLI ==="
+          cargo install tauri-cli --version '^2.0.0' --locked --verbose
+          cargo tauri --version
+          echo "============================"
+
+      - name: Build Tauri app
+        run: |
+          echo "=== Building Tauri app for x86_64-unknown-linux-gnu with OpenBLAS ==="
+          cargo tauri build --target x86_64-unknown-linux-gnu --features openblas --verbose
+          echo "====================================================================="
+        env:
+          CI: true
+          RUST_BACKTRACE: full
+
+      - name: List build outputs
+        run: |
+          echo "=== Build outputs ==="
+          ls -la src-tauri/target/x86_64-unknown-linux-gnu/release/ 2>/dev/null || echo 'release dir not found'
+          ls -la src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/ 2>/dev/null || echo 'bundle dir not found'
+          find src-tauri/target/x86_64-unknown-linux-gnu/release/bundle -type f -name "*.deb" 2>/dev/null || echo 'no deb files found'
+          find src-tauri/target/x86_64-unknown-linux-gnu/release/bundle -type f -name "*.AppImage" 2>/dev/null || echo 'no AppImage files found'
+          find src-tauri/target/x86_64-unknown-linux-gnu/release/bundle -type f -name "*.rpm" 2>/dev/null || echo 'no rpm files found'
+          echo "===================="
+
+      - name: Prepare artifacts
+        id: upload
+        run: |
+          echo "=== Preparing artifacts ==="
+          mkdir -p release-artifacts
+          echo "Copying DEB files..."
+          for file in src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb; do
+            [ -e "$file" ] || continue
+            base="$(basename "$file" .deb)"
+            cp "$file" "release-artifacts/${base}-linux-x64-openblas.deb"
+          done
+          ls release-artifacts/*.deb >/dev/null 2>&1 && echo "DEB files copied" || echo "No DEB files found"
+          echo "Copying AppImage files..."
+          for file in src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage; do
+            [ -e "$file" ] || continue
+            base="$(basename "$file" .AppImage)"
+            cp "$file" "release-artifacts/${base}-linux-x64-openblas.AppImage"
+          done
+          ls release-artifacts/*.AppImage >/dev/null 2>&1 && echo "AppImage files copied" || echo "No AppImage files found"
+          echo "Copying RPM files..."
+          for file in src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/rpm/*.rpm; do
+            [ -e "$file" ] || continue
+            base="$(basename "$file" .rpm)"
+            cp "$file" "release-artifacts/${base}-linux-x64-openblas.rpm"
+          done
+          ls release-artifacts/*.rpm >/dev/null 2>&1 && echo "RPM files copied" || echo "No RPM files found"
+          echo "Artifacts in release-artifacts:"
+          ls -la release-artifacts/
+          echo "artifact-path=release-artifacts" >> $GITHUB_OUTPUT
+          echo "==========================="
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: subtitle-forge-linux-x64-openblas
           path: release-artifacts/*
           if-no-files-found: warn
 
@@ -755,12 +1137,12 @@ jobs:
   create-release:
     name: Create Release
     runs-on: ubuntu-latest
-    needs: [build-macos-intel, build-macos-arm, build-windows-x64, build-windows-arm, build-linux-x64]
+    needs: [build-macos-intel, build-macos-arm, build-windows-x64, build-windows-x64-openblas, build-windows-arm, build-linux-x64, build-linux-x64-openblas]
     # Only create release for tag pushes and workflow_dispatch, not for branch pushes
     if: |
       always() &&
       (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/release-'))) &&
-      (needs.build-macos-intel.result == 'success' || needs.build-macos-arm.result == 'success' || needs.build-windows-x64.result == 'success' || needs.build-windows-arm.result == 'success' || needs.build-linux-x64.result == 'success')
+      (needs.build-macos-intel.result == 'success' || needs.build-macos-arm.result == 'success' || needs.build-windows-x64.result == 'success' || needs.build-windows-x64-openblas.result == 'success' || needs.build-windows-arm.result == 'success' || needs.build-linux-x64.result == 'success' || needs.build-linux-x64-openblas.result == 'success')
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -807,11 +1189,13 @@ jobs:
           prerelease: ${{ github.event.inputs.prerelease || false }}
           generate_release_notes: true
           files: |
-            artifacts/subtitle-forge-macos-intel/*
-            artifacts/subtitle-forge-macos-arm/*
-            artifacts/subtitle-forge-windows-x64/*
-            artifacts/subtitle-forge-windows-arm/*
-            artifacts/subtitle-forge-linux-x64/*
+            artifacts/subtitle-forge-macos-intel-metal/*
+            artifacts/subtitle-forge-macos-arm-metal/*
+            artifacts/subtitle-forge-windows-x64-standard/*
+            artifacts/subtitle-forge-windows-x64-openblas/*
+            artifacts/subtitle-forge-windows-arm-standard/*
+            artifacts/subtitle-forge-linux-x64-standard/*
+            artifacts/subtitle-forge-linux-x64-openblas/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -821,11 +1205,13 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Platform | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| macOS Intel | ${{ needs.build-macos-intel.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| macOS Apple Silicon | ${{ needs.build-macos-arm.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Windows x64 | ${{ needs.build-windows-x64.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Windows ARM64 | ${{ needs.build-windows-arm.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Linux x64 | ${{ needs.build-linux-x64.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| macOS Intel Metal | ${{ needs.build-macos-intel.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| macOS Apple Silicon Metal | ${{ needs.build-macos-arm.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Windows x64 Standard | ${{ needs.build-windows-x64.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Windows x64 OpenBLAS | ${{ needs.build-windows-x64-openblas.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Windows ARM64 Standard | ${{ needs.build-windows-arm.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Linux x64 Standard | ${{ needs.build-linux-x64.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Linux x64 OpenBLAS | ${{ needs.build-linux-x64-openblas.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Release URL: ${{ steps.create_release.outputs.url }}" >> $GITHUB_STEP_SUMMARY
 
@@ -833,7 +1219,7 @@ jobs:
   build-summary:
     name: Build Summary
     runs-on: ubuntu-latest
-    needs: [build-macos-intel, build-macos-arm, build-windows-x64, build-windows-arm, build-linux-x64]
+    needs: [build-macos-intel, build-macos-arm, build-windows-x64, build-windows-x64-openblas, build-windows-arm, build-linux-x64, build-linux-x64-openblas]
     if: always()
     steps:
       - name: Summarize build results
@@ -850,8 +1236,10 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Platform | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| macOS Intel | ${{ needs.build-macos-intel.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| macOS Apple Silicon | ${{ needs.build-macos-arm.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Windows x64 | ${{ needs.build-windows-x64.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Windows ARM64 | ${{ needs.build-windows-arm.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Linux x64 | ${{ needs.build-linux-x64.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| macOS Intel Metal | ${{ needs.build-macos-intel.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| macOS Apple Silicon Metal | ${{ needs.build-macos-arm.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Windows x64 Standard | ${{ needs.build-windows-x64.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Windows x64 OpenBLAS | ${{ needs.build-windows-x64-openblas.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Windows ARM64 Standard | ${{ needs.build-windows-arm.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Linux x64 Standard | ${{ needs.build-linux-x64.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Linux x64 OpenBLAS | ${{ needs.build-linux-x64-openblas.result }} |" >> $GITHUB_STEP_SUMMARY

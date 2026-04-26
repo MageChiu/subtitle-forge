@@ -1,4 +1,7 @@
 use super::engine::*;
+use super::capabilities::{
+    coreml_enabled, cuda_enabled, gpu_backend_available, metal_enabled, openblas_enabled,
+};
 use super::vad::{PlannedChunk, VadPlanner, VadPlannerConfig};
 use crate::error::AsrError;
 use async_trait::async_trait;
@@ -142,12 +145,12 @@ impl WhisperEngine {
         );
         tracing::info!(
             "Whisper backend features: metal={}, coreml={}, openblas={}, cuda={}",
-            cfg!(feature = "metal"),
-            cfg!(feature = "coreml"),
-            cfg!(feature = "openblas"),
-            cfg!(feature = "cuda")
+            metal_enabled(),
+            coreml_enabled(),
+            openblas_enabled(),
+            cuda_enabled()
         );
-        if use_gpu && !(cfg!(feature = "metal") || cfg!(feature = "coreml") || cfg!(feature = "cuda")) {
+        if use_gpu && !gpu_backend_available() {
             tracing::warn!("GPU acceleration requested, but no GPU-capable Whisper backend is compiled in");
         }
 
