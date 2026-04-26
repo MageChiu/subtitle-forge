@@ -396,7 +396,7 @@ jobs:
             "swresample-6.dll"
           )
           $releaseDir = "src-tauri/target/x86_64-pc-windows-msvc/release"
-          $bundleDir = "src-tauri/target/x86_64-pc-windows-msvc/release/bundle"
+          $resourceStageDir = "src-tauri/windows-runtime"
 
           Write-Host "=== Verifying FFmpeg DLLs in release dir ==="
           foreach ($dll in $requiredDlls) {
@@ -407,13 +407,13 @@ jobs:
             Write-Host "Found in release dir: $releasePath"
           }
 
-          Write-Host "=== Verifying FFmpeg DLLs in bundle staging dir ==="
+          Write-Host "=== Verifying FFmpeg DLLs in Windows resource stage dir ==="
           foreach ($dll in $requiredDlls) {
-            $bundleMatches = Get-ChildItem -Path $bundleDir -Recurse -Filter $dll -ErrorAction SilentlyContinue
-            if (-not $bundleMatches) {
-              throw "Missing required DLL in bundle staging dir: $dll"
+            $resourcePath = Join-Path $resourceStageDir $dll
+            if (-not (Test-Path $resourcePath)) {
+              throw "Missing required DLL in Windows resource stage dir: $dll"
             }
-            $bundleMatches | ForEach-Object { Write-Host "Found in bundle: $($_.FullName)" }
+            Write-Host "Found in resource stage dir: $resourcePath"
           }
           Write-Host "============================================"
 
@@ -577,7 +577,7 @@ jobs:
             "swresample-6.dll"
           )
           $releaseDir = "src-tauri/target/aarch64-pc-windows-msvc/release"
-          $bundleDir = "src-tauri/target/aarch64-pc-windows-msvc/release/bundle"
+          $resourceStageDir = "src-tauri/windows-runtime"
 
           Write-Host "=== Verifying FFmpeg DLLs in release dir ==="
           foreach ($dll in $requiredDlls) {
@@ -588,13 +588,13 @@ jobs:
             Write-Host "Found in release dir: $releasePath"
           }
 
-          Write-Host "=== Verifying FFmpeg DLLs in bundle staging dir ==="
+          Write-Host "=== Verifying FFmpeg DLLs in Windows resource stage dir ==="
           foreach ($dll in $requiredDlls) {
-            $bundleMatches = Get-ChildItem -Path $bundleDir -Recurse -Filter $dll -ErrorAction SilentlyContinue
-            if (-not $bundleMatches) {
-              throw "Missing required DLL in bundle staging dir: $dll"
+            $resourcePath = Join-Path $resourceStageDir $dll
+            if (-not (Test-Path $resourcePath)) {
+              throw "Missing required DLL in Windows resource stage dir: $dll"
             }
-            $bundleMatches | ForEach-Object { Write-Host "Found in bundle: $($_.FullName)" }
+            Write-Host "Found in resource stage dir: $resourcePath"
           }
           Write-Host "============================================"
 
